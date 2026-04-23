@@ -3,6 +3,7 @@ import jetbrains.buildServer.configs.kotlin.buildFeatures.perfmon
 import jetbrains.buildServer.configs.kotlin.buildSteps.powerShell
 import jetbrains.buildServer.configs.kotlin.buildSteps.script
 import jetbrains.buildServer.configs.kotlin.triggers.VcsTrigger
+import jetbrains.buildServer.configs.kotlin.triggers.finishBuildTrigger
 import jetbrains.buildServer.configs.kotlin.triggers.vcs
 import jetbrains.buildServer.configs.kotlin.vcs.GitVcsRoot
 
@@ -114,6 +115,15 @@ object BuildEditor : BuildType({
                     if (${'$'}LastExitCode -ge 8) { write-error "Robocopy failed" }
                 """.trimIndent()
             }
+        }
+    }
+
+    triggers {
+        // Fetch Source가 성공으로 끝나면 자동으로 Build Editor를 큐잉
+        // (Snapshot dependency는 역방향만 작동하므로 별도 트리거 필요)
+        finishBuildTrigger {
+            buildType = "${FetchSource.id}"
+            successfulOnly = true
         }
     }
 
