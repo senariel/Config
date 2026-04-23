@@ -41,10 +41,11 @@ project {
             label = "빌드 클린 모드",
             description = "빌드 전 정리 범위 선택. 수동 실행 시 드롭다운에서 변경 가능.",
             display = ParameterDisplay.PROMPT,
+            // TeamCity DSL: Pair<displayLabel, value> — UI 표시는 first, 실제 값은 second
             options = listOf(
-                "Incremental"  to "빠른 빌드 (클린 없음, 기본값)",
-                "CleanSource"  to "소스 정리 (고아 파일 제거)",
-                "FullRebuild"  to "전체 재빌드 (Binaries/Intermediate까지 초기화)"
+                "빠른 빌드 (클린 없음, 기본값)"                to "Incremental",
+                "소스 정리 (고아 파일 제거)"                    to "CleanSource",
+                "전체 재빌드 (Binaries/Intermediate까지 초기화)" to "FullRebuild"
             )
         )
     }
