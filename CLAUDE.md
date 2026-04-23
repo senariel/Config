@@ -98,7 +98,31 @@ options = listOf(
 
 거꾸로 쓰면 PowerShell `%CleanMode%`가 한글 라벨이 들어와서 switch가 매칭 실패하고 `Unknown CleanMode: '소스 정리...'` 같은 에러가 남. (이미 한 번 당함, build #9)
 
-### 7. Horde 모듈 빌드 산출물이 git untracked로 남음
+### 7. Snapshot Dependency는 한 방향만 작동
+`BuildEditor.dependencies.snapshot(FetchSource)` 는 **"Build Editor가 시작될 때 Fetch Source가 먼저 끝나있어야 한다"** 는 역방향 의존성. 즉:
+
+- ✅ Build Editor 트리거 → Fetch Source 자동 선행 → Build Editor
+- ❌ Fetch Source 트리거 → 끝나도 Build Editor는 호출 안 됨
+
+VCS 커밋이나 수동 Run으로 Fetch Source만 돌면 거기서 멈춤. Build Editor를 따라오게 하려면 별도 트리거 필요. 현재 적용된 해결: **Build Editor에 `finishBuildTrigger`** — Fetch Source가 성공하면 자동 큐잉.
+
+```kotlin
+object BuildEditor : BuildType({
+    triggers {
+        finishBuildTrigger {
+            buildType = "${FetchSource.id}"
+            successfulOnly = true
+        }
+    }
+    dependencies {
+        snapshot(FetchSource) { runOnSameAgent = true }
+    }
+})
+```
+
+대안: VCS 트리거를 BuildEditor로 옮기고 FetchSource는 트리거 없음 — "Fetch만 따로 돌리기"가 필요 없으면 더 깔끔.
+
+### 8. Horde 모듈 빌드 산출물이 git untracked로 남음
 `Engine/Source/Programs/Horde/HordeAgent/bin/Release/net8.0/...` 등 Horde 관련 .NET 빌드 결과물이 매번 새로 생기는데 `.gitignore`에 안 잡혀있음. 누적되면 commit하지 않은 상태로 disk만 채움.
 
 → 정기적인 `CleanMode = CleanSource` 가 자동 청소 효과 (`git clean -fd`로 untracked 제거).
