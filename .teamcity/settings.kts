@@ -34,6 +34,21 @@ project {
 
     vcsRoot(HttpsGithubComSenarielUnrealEngineRefsHeadsRelease)
 
+    // 빌드 시 클린 범위 — 기본은 인크리멘탈, 수동 실행 시 드롭다운으로 선택
+    params {
+        select(
+            "CleanMode", "Incremental",
+            label = "빌드 클린 모드",
+            description = "빌드 전 정리 범위 선택. 수동 실행 시 드롭다운에서 변경 가능.",
+            display = ParameterDisplay.PROMPT,
+            options = listOf(
+                "Incremental"  to "빠른 빌드 (클린 없음, 기본값)",
+                "CleanSource"  to "소스 정리 (고아 파일 제거)",
+                "FullRebuild"  to "전체 재빌드 (Binaries/Intermediate까지 초기화)"
+            )
+        )
+    }
+
     buildType(FetchSource)
     buildType(BuildEditor)
     buildTypesOrder = arrayListOf(FetchSource, BuildEditor)
@@ -44,8 +59,6 @@ object BuildEditor : BuildType({
 
     params {
         param("env.UE5_DIST_PATH", """D:\Shared\UE5""")
-        checkbox("env.IsClean", "false",
-                  checked = "true", unchecked = "false")
     }
 
     vcs {
@@ -65,9 +78,12 @@ object BuildEditor : BuildType({
                     chcp 65001 | Out-Null
                     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
                     
-                    # Build flags
+                    # CleanMode가 FullRebuild면 UAT -clean 플래그 추가
                     ${'$'}ExtraFlags = @()
-                    if (${'$'}env:IsClean -eq 'true') { ${'$'}ExtraFlags += '-clean' }
+                    if ('%CleanMode%' -eq 'FullRebuild') {
+                        Write-Host ">> CleanMode = FullRebuild → UAT -clean 적용"
+                        ${'$'}ExtraFlags += '-clean'
+                    }
                     
                     # Step 1: Generate project files
                     & ".\GenerateProjectFiles.bat"
@@ -122,6 +138,40 @@ object FetchSource : BuildType({
     }
 
     steps {
+        // CleanMode에 따라 git clean 분기 — Setup 보다 먼저 실행
+        powerShell {
+            name = "Clean by CleanMode"
+            id = "Clean_by_CleanMode"
+            scriptMode = script {
+                content = """
+                    ${'$'}ErrorActionPreference = 'Stop'
+                    ${'$'}cleanMode = '%CleanMode%'
+                    
+                    Write-Host "================================================"
+                    Write-Host "  Clean Mode: ${'$'}cleanMode"
+                    Write-Host "================================================"
+                    
+                    switch (${'$'}cleanMode) {
+                        'Incremental' {
+                            Write-Host ">> 클린 스킵 - 인크리멘탈 유지 (UBA 캐시 활용)"
+                        }
+                        'CleanSource' {
+                            Write-Host ">> 소스 트리 고아 파일 제거"
+                            git clean -fd -- Engine/Source Engine/Plugins Engine/Shaders
+                            if (${'$'}LASTEXITCODE -ne 0) { throw "git clean failed: ${'$'}LASTEXITCODE" }
+                        }
+                        'FullRebuild' {
+                            Write-Host ">> 전체 초기화 (Binaries/Intermediate 포함)"
+                            git clean -fdx -- Engine
+                            if (${'$'}LASTEXITCODE -ne 0) { throw "git clean failed: ${'$'}LASTEXITCODE" }
+                        }
+                        default {
+                            throw "Unknown CleanMode: '${'$'}cleanMode'"
+                        }
+                    }
+                """.trimIndent()
+            }
+        }
         script {
             name = "Setup"
             id = "Setup"
