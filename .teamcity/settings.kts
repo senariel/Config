@@ -111,7 +111,7 @@ object BuildEditor : BuildType({
                     ${'$'}destination = "${'$'}env:UE5_DIST_PATH"
                     
                     if (!(Test-Path ${'$'}destination)) { New-Item -ItemType Directory -Force -Path ${'$'}destination }
-                    robocopy ${'$'}source ${'$'}destination /E /Z /ZB /R:5 /W:5
+                    robocopy ${'$'}source ${'$'}destination /MIR /Z /ZB /R:5 /W:5
                     if (${'$'}LastExitCode -ge 8) { write-error "Robocopy failed" }
                 """.trimIndent()
             }
