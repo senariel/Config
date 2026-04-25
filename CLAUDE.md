@@ -128,6 +128,31 @@ object BuildEditor : BuildType({
 → 정기적인 `CleanMode = CleanSource` 가 자동 청소 효과 (`git clean -fd`로 untracked 제거).
 → 더 근본적으론 Horde의 `bin/` 디렉토리를 엔진 repo `.gitignore`에 추가하는 게 이상적.
 
+### 9. Distribute 스텝 robocopy `/MIR` 필수
+**가장 시간 잡아먹은 함정.** 처음에는 "고아 모듈 파일 때문에 에디터가 크래시"인 줄 알고 git/소스 쪽을 의심했는데, 진짜 원인은 Distribute 스텝의 robocopy 옵션이었음.
+
+```powershell
+# 이전 (틀림): destination에 옛 파일 누적
+robocopy $source $destination /E /Z /ZB /R:5 /W:5
+
+# 현재 (맞음): destination을 source와 정확히 일치
+robocopy $source $destination /MIR /Z /ZB /R:5 /W:5
+```
+
+`/E`는 "subdirs 포함 복사", `/MIR`은 `/E + /PURGE` — destination에 있고 source에 없는 파일을 자동 삭제. 없으면 9개월 전 빌드의 잔해가 그대로 쌓여서 모듈 로딩 시 크래시 유발 (실제 사례: `MeshModelingToolsetExp/Binaries/Win64/UnrealEditor-SkeletalMeshModifiers.dll` 2025-07-20 잔해).
+
+**진단 팁**: 빌드 로그의 `Clean by CleanMode` 스텝 출력에 의심 경로가 안 나오면 → 그 경로는 에이전트 소스가 아닌 **distributed 결과물**에서 누적된 것. robocopy 옵션 점검.
+
+### 10. UI에서 변경 시 TeamCity가 patch 파일 생성
+Versioned Settings 활성 상태에서 UI로 빌드 설정을 바꾸면, 기존 `settings.kts`를 직접 수정하지 않고 `.teamcity/patches/buildTypes/<BuildType>.kts` 라는 별도 패치 파일을 만들어 커밋함. 동작은 정상이지만 repo가 지저분해짐.
+
+**병합 방법** (패치 파일 자체의 헤더 코멘트가 안내):
+1. 패치 내용을 보고 `settings.kts`의 해당 buildType을 직접 수정
+2. `.teamcity/patches/...` 파일 삭제
+3. 두 변경을 하나의 커밋으로 push
+
+→ TeamCity는 "패치가 적용됐다"고 인식하고 정상 작동. repo는 깔끔하게 유지.
+
 ## 운영 — 자주 하는 작업
 
 ### 빌드 설정 변경하기
