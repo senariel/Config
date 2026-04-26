@@ -188,10 +188,7 @@ object BuildEditor : BuildType({
 
                     Write-Host ">> RunUAT BuildGraph 시작 (watchdog: 30분 무출력 시 종료)"
                     Write-Host ">> args: ${'$'}(${'$'}uatArgs -join ' ')"
-                    ${'$'}uatProc = Start-Process -FilePath ".\Engine\Build\BatchFiles\RunUAT.bat" ``
-                        -ArgumentList ${'$'}uatArgs ``
-                        -RedirectStandardOutput ${'$'}uatLog ``
-                        -PassThru -NoNewWindow
+                    ${'$'}uatProc = Start-Process -FilePath ".\Engine\Build\BatchFiles\RunUAT.bat" -ArgumentList ${'$'}uatArgs -RedirectStandardOutput ${'$'}uatLog -PassThru -NoNewWindow
 
                     ${'$'}noOutputTimeoutMin = 30
                     ${'$'}lastSize = 0
@@ -266,10 +263,7 @@ object BuildEditor : BuildType({
                     ${'$'}tmpLog = [System.IO.Path]::GetTempFileName()
                     ${'$'}rcArgs = @(${'$'}source, ${'$'}destination, '/MIR', '/Z', '/R:5', '/W:5', '/NP', '/NDL')
                     Write-Host ">> robocopy 시작 (mirror): ${'$'}source -> ${'$'}destination"
-                    ${'$'}proc = Start-Process -FilePath 'robocopy.exe' ``
-                        -ArgumentList ${'$'}rcArgs ``
-                        -RedirectStandardOutput ${'$'}tmpLog ``
-                        -PassThru -NoNewWindow
+                    ${'$'}proc = Start-Process -FilePath 'robocopy.exe' -ArgumentList ${'$'}rcArgs -RedirectStandardOutput ${'$'}tmpLog -PassThru -NoNewWindow
 
                     ${'$'}startTime = Get-Date
                     ${'$'}lastSize = 0
