@@ -166,16 +166,82 @@ object BuildEditor : BuildType({
                         ${'$'}ExtraFlags += '-clean'
                     }
 
-                    # Step 1: Generate project files
+                    # Sub-step 1a: Generate project files (보통 1-2분, watchdog 불필요)
                     & ".\GenerateProjectFiles.bat"
                     if (${'$'}LASTEXITCODE -ne 0) {
                         Write-Host "##teamcity[buildProblem description='GenerateProjectFiles failed']"
                         exit ${'$'}LASTEXITCODE
                     }
 
-                    # Step 2: Run UAT BuildGraph
-                    & ".\Engine\Build\BatchFiles\RunUAT.bat" BuildGraph -script="Engine/Build/InstalledEngineBuild.xml" -target="Make Installed Build Win64" -set:WithDDC=false -set:HostPlatformOnly=true -set:GameConfigurations=Development @ExtraFlags
-                    exit ${'$'}LASTEXITCODE
+                    # Sub-step 1b: RunUAT BuildGraph — watchdog으로 감싸서 무출력 timeout 적용
+                    # TeamCity는 "no output for N min" failure condition을 지원하지 않으므로,
+                    # 빌드 머신 성능을 고려해 전체 timeout 대신 무출력 hang만 감지하기 위함.
+                    # 정상 빌드는 BuildGraph가 매 초 다수의 컴파일/링크 라인을 emit하므로
+                    # 30분 무출력은 거의 확실히 hang 상태로 판단.
+                    ${'$'}uatLog = [System.IO.Path]::GetTempFileName()
+                    ${'$'}uatArgs = @('BuildGraph',
+                        '-script=Engine/Build/InstalledEngineBuild.xml',
+                        '-target=Make Installed Build Win64',
+                        '-set:WithDDC=false',
+                        '-set:HostPlatformOnly=true',
+                        '-set:GameConfigurations=Development') + ${'$'}ExtraFlags
+
+                    Write-Host ">> RunUAT BuildGraph 시작 (watchdog: 30분 무출력 시 종료)"
+                    Write-Host ">> args: ${'$'}(${'$'}uatArgs -join ' ')"
+                    ${'$'}uatProc = Start-Process -FilePath ".\Engine\Build\BatchFiles\RunUAT.bat" ``
+                        -ArgumentList ${'$'}uatArgs ``
+                        -RedirectStandardOutput ${'$'}uatLog ``
+                        -PassThru -NoNewWindow
+
+                    ${'$'}noOutputTimeoutMin = 30
+                    ${'$'}lastSize = 0
+                    ${'$'}lastChangeTime = Get-Date
+                    ${'$'}lastDisplaySize = 0
+                    ${'$'}killedByWatchdog = ${'$'}false
+
+                    while (!${'$'}uatProc.HasExited) {
+                        Start-Sleep -Seconds 30
+
+                        ${'$'}currentSize = if (Test-Path ${'$'}uatLog) { (Get-Item ${'$'}uatLog).Length } else { 0 }
+
+                        # 새로 쓰여진 로그 라인을 stdout으로 흘려보냄 (실시간 출력)
+                        if (${'$'}currentSize -gt ${'$'}lastDisplaySize) {
+                            ${'$'}fs = [System.IO.File]::Open(${'$'}uatLog, 'Open', 'Read', 'ReadWrite')
+                            ${'$'}fs.Position = ${'$'}lastDisplaySize
+                            ${'$'}sr = New-Object System.IO.StreamReader(${'$'}fs)
+                            ${'$'}newContent = ${'$'}sr.ReadToEnd()
+                            ${'$'}sr.Close(); ${'$'}fs.Close()
+                            if (${'$'}newContent.Trim()) { Write-Host ${'$'}newContent }
+                            ${'$'}lastDisplaySize = ${'$'}currentSize
+                        }
+
+                        # 활동 감지: 로그 사이즈 변화 시 lastChangeTime 갱신
+                        if (${'$'}currentSize -ne ${'$'}lastSize) {
+                            ${'$'}lastChangeTime = Get-Date
+                            ${'$'}lastSize = ${'$'}currentSize
+                        }
+
+                        ${'$'}silentMin = ((Get-Date) - ${'$'}lastChangeTime).TotalMinutes
+
+                        # 무출력 timeout 검사
+                        if (${'$'}silentMin -ge ${'$'}noOutputTimeoutMin) {
+                            Write-Host "##teamcity[buildProblem description='[WATCHDOG] BuildGraph가 ${'$'}([int]${'$'}silentMin)분간 무출력 - hang 감지로 강제 종료']"
+                            try { ${'$'}uatProc.Kill() } catch { Write-Host "[WATCHDOG] Kill failed: ${'$'}_" }
+                            ${'$'}killedByWatchdog = ${'$'}true
+                            break
+                        }
+                    }
+
+                    # 잔여 출력 flush
+                    Get-Content ${'$'}uatLog -Raw -ErrorAction SilentlyContinue | ForEach-Object { if (${'$'}_) { Write-Host ${'$'}_ } }
+                    Remove-Item ${'$'}uatLog -ErrorAction SilentlyContinue
+
+                    if (${'$'}killedByWatchdog) { exit 124 }  # 124 = GNU timeout convention
+
+                    if (${'$'}uatProc.ExitCode -ne 0) {
+                        Write-Host "##teamcity[buildProblem description='RunUAT failed with exit code ${'$'}(${'$'}uatProc.ExitCode)']"
+                        exit ${'$'}uatProc.ExitCode
+                    }
                 """.trimIndent()
             }
         }
