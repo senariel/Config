@@ -2,51 +2,41 @@ import jetbrains.buildServer.configs.kotlin.*
 import jetbrains.buildServer.configs.kotlin.buildFeatures.perfmon
 import jetbrains.buildServer.configs.kotlin.buildSteps.powerShell
 import jetbrains.buildServer.configs.kotlin.buildSteps.script
+import jetbrains.buildServer.configs.kotlin.failureConditions.BuildFailureOnText
+import jetbrains.buildServer.configs.kotlin.failureConditions.failOnText
 import jetbrains.buildServer.configs.kotlin.triggers.VcsTrigger
-import jetbrains.buildServer.configs.kotlin.triggers.finishBuildTrigger
 import jetbrains.buildServer.configs.kotlin.triggers.vcs
 import jetbrains.buildServer.configs.kotlin.vcs.GitVcsRoot
 
 /*
-The settings script is an entry point for defining a TeamCity
-project hierarchy. The script should contain a single call to the
-project() function with a Project instance or an init function as
-an argument.
+TeamCity Versioned Settings — UnrealEngine5 (engine builds)
 
-VcsRoots, BuildTypes, Templates, and subprojects can be
-registered inside the project using the vcsRoot(), buildType(),
-template(), and subProject() methods respectively.
-
-To debug settings scripts in command-line, run the
-
-    mvnDebug org.jetbrains.teamcity:teamcity-configs-maven-plugin:generate
-
-command and attach your debugger to the port 8000.
-
-To debug in IntelliJ Idea, open the 'Maven Projects' tool window (View
--> Tool Windows -> Maven Projects), find the generate task node
-(Plugins -> teamcity-configs -> teamcity-configs:generate), the
-'Debug' option is available in the context menu for the task.
+이 파일은 DevPub / UnrealEngine5 프로젝트의 단일 소스 (One-way 모드).
+변경 절차:
+  1) 이 파일 수정 → push
+  2) TeamCity가 ~30초 내 자동 적용
+  3) UI는 read-only로 유지 (긴급 변경 절차는 CLAUDE.md 참조)
 */
 
 version = "2025.11"
 
 project {
 
-    vcsRoot(HttpsGithubComSenarielUnrealEngineRefsHeadsRelease)
+    vcsRoot(EngineVcs)
 
-    // 빌드 시 클린 범위 — 기본은 인크리멘탈, 수동 실행 시 드롭다운으로 선택
+    // 빌드 시 클린 범위 — 일반 Run 시 기본값(Incremental) 즉시 사용,
+    // 다른 모드는 Run Custom Build 다이얼로그에서 선택
     params {
         select(
             "CleanMode", "Incremental",
             label = "빌드 클린 모드",
-            description = "빌드 전 정리 범위 선택. 수동 실행 시 드롭다운에서 변경 가능.",
-            display = ParameterDisplay.PROMPT,
-            // TeamCity DSL: Pair<displayLabel, value> — UI 표시는 first, 실제 값은 second
+            description = "빌드 전 정리 범위. Run Custom Build에서 변경 가능.",
+            display = ParameterDisplay.NORMAL,
+            // TeamCity DSL: Pair<displayLabel, value>
             options = listOf(
-                "빠른 빌드 (클린 없음, 기본값)"                to "Incremental",
-                "소스 정리 (고아 파일 제거)"                    to "CleanSource",
-                "전체 재빌드 (Binaries/Intermediate까지 초기화)" to "FullRebuild"
+                "빠른 빌드 (클린 없음)"                       to "Incremental",
+                "소스 정리 (고아 파일 제거)"                  to "CleanSource",
+                "전체 재빌드 (Binaries/Intermediate 초기화)"  to "FullRebuild"
             )
         )
     }
@@ -56,100 +46,34 @@ project {
     buildTypesOrder = arrayListOf(FetchSource, BuildEditor)
 }
 
-object BuildEditor : BuildType({
-    name = "Build Editor"
-
-    params {
-        param("env.UE5_DIST_PATH", """D:\Shared\UE5""")
-    }
-
-    vcs {
-        checkoutMode = CheckoutMode.MANUAL
-        checkoutDir = "UE5"
-    }
-
-    steps {
-        powerShell {
-            name = "Build UE5 Installed Engine"
-            id = "jetbrains_powershell"
-            scriptMode = script {
-                content = """
-                    ${'$'}ErrorActionPreference = 'Stop'
-                    
-                    # UTF-8 codepage (cmd의 chcp 65001 대응)
-                    chcp 65001 | Out-Null
-                    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-                    
-                    # CleanMode가 FullRebuild면 UAT -clean 플래그 추가
-                    ${'$'}ExtraFlags = @()
-                    if ('%CleanMode%' -eq 'FullRebuild') {
-                        Write-Host ">> CleanMode = FullRebuild → UAT -clean 적용"
-                        ${'$'}ExtraFlags += '-clean'
-                    }
-                    
-                    # Step 1: Generate project files
-                    & ".\GenerateProjectFiles.bat"
-                    if (${'$'}LASTEXITCODE -ne 0) {
-                        Write-Host "##teamcity[buildProblem description='GenerateProjectFiles failed']"
-                        exit ${'$'}LASTEXITCODE
-                    }
-                    
-                    # Step 2: Run UAT BuildGraph
-                    & ".\Engine\Build\BatchFiles\RunUAT.bat" BuildGraph -script="Engine/Build/InstalledEngineBuild.xml" -target="Make Installed Build Win64" -set:WithDDC=false -set:HostPlatformOnly=true -set:GameConfigurations=Development @ExtraFlags
-                    exit ${'$'}LASTEXITCODE
-                """.trimIndent()
-            }
-        }
-        powerShell {
-            name = "Distribute to Shared Folder"
-            id = "Distribute_to_Shared_Folder"
-            scriptMode = script {
-                content = """
-                    chcp 65001
-                    
-                    ${'$'}source = "%teamcity.build.checkoutDir%\LocalBuilds\Engine\Windows"
-                    ${'$'}destination = "${'$'}env:UE5_DIST_PATH"
-                    
-                    if (!(Test-Path ${'$'}destination)) { New-Item -ItemType Directory -Force -Path ${'$'}destination }
-                    robocopy ${'$'}source ${'$'}destination /MIR /Z /ZB /R:5 /W:5
-                    if (${'$'}LastExitCode -ge 8) { write-error "Robocopy failed" }
-                """.trimIndent()
-            }
-        }
-    }
-
-    triggers {
-        // Fetch Source가 성공으로 끝나면 자동으로 Build Editor를 큐잉
-        // (Snapshot dependency는 역방향만 작동하므로 별도 트리거 필요)
-        finishBuildTrigger {
-            buildType = "${FetchSource.id}"
-            successfulOnly = true
-        }
-    }
-
-    features {
-        perfmon {
-        }
-    }
-
-    dependencies {
-        snapshot(FetchSource) {
-            runOnSameAgent = true
-        }
+// ==========================================================================
+// VCS Root: Engine source repository
+// ==========================================================================
+object EngineVcs : GitVcsRoot({
+    name = "UnrealEngine release"
+    url = "https://github.com/senariel/UnrealEngine"
+    branch = "refs/heads/release"
+    branchSpec = "refs/heads/*"
+    // tokenId는 부트스트랩 후 UI에서 attach (CLAUDE.md 부트스트랩 절차 참조)
+    authMethod = token {
+        userName = "oauth2"
+        tokenId = ""
     }
 })
 
+// ==========================================================================
+// Fetch Source: 소스 동기화 + CleanMode에 따른 정리
+//   - 트리거 없음 (Build Editor가 트리거되면 snapshot dep로 자동 선행)
+// ==========================================================================
 object FetchSource : BuildType({
     name = "Fetch Source"
 
     vcs {
-        root(HttpsGithubComSenarielUnrealEngineRefsHeadsRelease)
-
+        root(EngineVcs)
         checkoutDir = "UE5"
     }
 
     steps {
-        // CleanMode에 따라 git clean 분기 — Setup 보다 먼저 실행
         powerShell {
             name = "Clean by CleanMode"
             id = "Clean_by_CleanMode"
@@ -157,11 +81,11 @@ object FetchSource : BuildType({
                 content = """
                     ${'$'}ErrorActionPreference = 'Stop'
                     ${'$'}cleanMode = '%CleanMode%'
-                    
+
                     Write-Host "================================================"
                     Write-Host "  Clean Mode: ${'$'}cleanMode"
                     Write-Host "================================================"
-                    
+
                     switch (${'$'}cleanMode) {
                         'Incremental' {
                             Write-Host ">> 클린 스킵 - 인크리멘탈 유지 (UBA 캐시 활용)"
@@ -190,11 +114,7 @@ object FetchSource : BuildType({
         }
     }
 
-    triggers {
-        vcs {
-            quietPeriodMode = VcsTrigger.QuietPeriodMode.USE_DEFAULT
-        }
-    }
+    // Triggers 없음 — Build Editor의 VCS trigger가 snapshot dep로 이쪽도 깨움
 
     features {
         perfmon {
@@ -206,13 +126,115 @@ object FetchSource : BuildType({
     }
 })
 
-object HttpsGithubComSenarielUnrealEngineRefsHeadsRelease : GitVcsRoot({
-    name = "https://github.com/senariel/UnrealEngine#refs/heads/release"
-    url = "https://github.com/senariel/UnrealEngine"
-    branch = "refs/heads/release"
-    branchSpec = "refs/heads/*"
-    authMethod = token {
-        userName = "oauth2"
-        tokenId = "tc_token_id:CID_3ab2f5c96314802c7074714f2b03c3a5:-1:526a4bef-e5ea-4247-849b-0a92dd5e4288"
+// ==========================================================================
+// Build Editor: 엔진 Installed Build 생성 + 배포
+//   - VCS commit이 들어오면 이 빌드가 트리거됨 → snapshot dep로 FetchSource 선행
+//   - Distribute 스텝은 robocopy /MIR로 destination을 source와 정확히 일치
+// ==========================================================================
+object BuildEditor : BuildType({
+    name = "Build Editor"
+
+    params {
+        param("env.UE5_DIST_PATH", """D:\Shared\UE5""")
+    }
+
+    vcs {
+        // VCS Root 부착 — VCS trigger가 동작하려면 필요
+        // 단, checkoutMode = MANUAL 이라 Build Editor는 자체 체크아웃 안 함
+        // FetchSource가 받아둔 트리를 그대로 사용 (checkoutDir 공유)
+        root(EngineVcs)
+        checkoutMode = CheckoutMode.MANUAL
+        checkoutDir = "UE5"
+    }
+
+    steps {
+        powerShell {
+            name = "Build UE5 Installed Engine"
+            id = "jetbrains_powershell"
+            scriptMode = script {
+                content = """
+                    ${'$'}ErrorActionPreference = 'Stop'
+
+                    # UTF-8 codepage (cmd의 chcp 65001 대응)
+                    chcp 65001 | Out-Null
+                    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+                    # CleanMode가 FullRebuild면 UAT -clean 플래그 추가
+                    ${'$'}ExtraFlags = @()
+                    if ('%CleanMode%' -eq 'FullRebuild') {
+                        Write-Host ">> CleanMode = FullRebuild → UAT -clean 적용"
+                        ${'$'}ExtraFlags += '-clean'
+                    }
+
+                    # Step 1: Generate project files
+                    & ".\GenerateProjectFiles.bat"
+                    if (${'$'}LASTEXITCODE -ne 0) {
+                        Write-Host "##teamcity[buildProblem description='GenerateProjectFiles failed']"
+                        exit ${'$'}LASTEXITCODE
+                    }
+
+                    # Step 2: Run UAT BuildGraph
+                    & ".\Engine\Build\BatchFiles\RunUAT.bat" BuildGraph -script="Engine/Build/InstalledEngineBuild.xml" -target="Make Installed Build Win64" -set:WithDDC=false -set:HostPlatformOnly=true -set:GameConfigurations=Development @ExtraFlags
+                    exit ${'$'}LASTEXITCODE
+                """.trimIndent()
+            }
+        }
+        powerShell {
+            name = "Distribute to Shared Folder"
+            id = "Distribute_to_Shared_Folder"
+            scriptMode = script {
+                content = """
+                    chcp 65001
+
+                    ${'$'}source = "%teamcity.build.checkoutDir%\LocalBuilds\Engine\Windows"
+                    ${'$'}destination = "${'$'}env:UE5_DIST_PATH"
+
+                    if (!(Test-Path ${'$'}destination)) { New-Item -ItemType Directory -Force -Path ${'$'}destination }
+
+                    # /MIR = /E + /PURGE → destination을 source와 정확히 일치
+                    # (옛 빌드 잔해 자동 삭제, 모듈 로딩 크래시 예방)
+                    robocopy ${'$'}source ${'$'}destination /MIR /Z /ZB /R:5 /W:5
+                    if (${'$'}LastExitCode -ge 8) { write-error "Robocopy failed" }
+                """.trimIndent()
+            }
+        }
+    }
+
+    triggers {
+        // Engine repo commit → Build Editor 큐잉 → snapshot dep로 FetchSource 자동 선행 → 이 빌드 실행
+        vcs {
+            quietPeriodMode = VcsTrigger.QuietPeriodMode.USE_DEFAULT
+        }
+    }
+
+    features {
+        perfmon {
+        }
+    }
+
+    failureConditions {
+        // 모듈 로드 실패 패턴 (빌드 자체는 success여도 런타임 로딩 이슈 자동 감지)
+        failOnText {
+            conditionType = BuildFailureOnText.ConditionType.CONTAINS
+            pattern = "could not be loaded"
+            failureMessage = "모듈 로딩 실패 패턴 감지"
+            reverse = false
+            stopBuildOnFailure = false
+        }
+        // .modules 매니페스트와 DLL의 BuildId 불일치
+        failOnText {
+            conditionType = BuildFailureOnText.ConditionType.CONTAINS
+            pattern = "BuildId mismatch"
+            failureMessage = "BuildId mismatch 감지 (modules 매니페스트 ↔ DLL)"
+            reverse = false
+            stopBuildOnFailure = false
+        }
+    }
+
+    dependencies {
+        snapshot(FetchSource) {
+            runOnSameAgent = true
+            onDependencyFailure = FailureAction.FAIL_TO_START
+        }
     }
 })
