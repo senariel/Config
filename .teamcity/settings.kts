@@ -54,10 +54,10 @@ object EngineVcs : GitVcsRoot({
     url = "https://github.com/senariel/UnrealEngine"
     branch = "refs/heads/release"
     branchSpec = "refs/heads/*"
-    // tokenId는 부트스트랩 후 UI에서 attach (CLAUDE.md 부트스트랩 절차 참조)
     authMethod = token {
         userName = "oauth2"
-        tokenId = ""
+        // EngineVcs 토큰 (DevPubApp으로 발급, 부트스트랩 시 VCS Auth Tokens에서 Copy ID로 획득)
+        tokenId = "tc_token_id:CID_3ab2f5c96314802c7074714f2b03c3a5:-1:62ad1ec8-56b9-4b2a-adce-68a33ee027a2"
     }
 })
 
