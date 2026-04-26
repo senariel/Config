@@ -81,6 +81,55 @@ TeamCity 프로젝트 트리
 
 빌드는 Success로 끝났는데 런타임에서 깨지는 패턴을 미리 잡기 위함.
 
+## Watchdog 패턴 — 무출력 hang 방지
+
+**TeamCity 한계**: 빌드 컨피그 레벨에 "no output for N minutes" failure condition이 없음. 전체 시간 timeout(`executionTimeoutMin`)만 가능. 그러나 빌드 머신이 미니 PC라 정상 빌드도 5h+ 걸릴 수 있어 전체 timeout은 부적합.
+
+**해결**: 두 PowerShell 스텝(BuildGraph, Distribute)을 모두 watchdog로 감싸서 무출력 hang을 강제 종료.
+
+### Step 1 (BuildGraph) — Watchdog (30분 무출력 시 kill)
+
+```powershell
+$proc = Start-Process -FilePath ".\Engine\Build\BatchFiles\RunUAT.bat" `
+    -ArgumentList @('BuildGraph', ...) `
+    -RedirectStandardOutput $tmpLog `
+    -PassThru -NoNewWindow
+
+while (!$proc.HasExited) {
+    Start-Sleep -Seconds 30
+    # 새 로그 라인 stdout으로 흘림
+    # 로그 사이즈 변화 감지 → lastChangeTime 갱신
+    # 30분 무변화 시 $proc.Kill() + exit 124
+}
+```
+
+이유: BuildGraph는 정상 동작 시 매 초 다수의 컴파일/링크 라인 emit. 30분 무출력은 거의 확실히 hang.
+
+### Step 2 (Distribute) — Heartbeat (60초마다 강제 출력)
+
+robocopy의 `\r`-only 진행률 출력 때문에 큰 파일 복사 중 newline 없음 → TeamCity 무출력 오인.
+
+```powershell
+$proc = Start-Process -FilePath 'robocopy.exe' -ArgumentList @(... '/MIR', '/Z', '/NP', '/NDL') ...
+while (!$proc.HasExited) {
+    Start-Sleep -Seconds 60
+    # heartbeat 라인 출력 (no-output timeout 회피)
+}
+```
+
+### 핵심 원리
+
+- `Start-Process -RedirectStandardOutput`로 stdout을 파일로 받음
+- 폴링 루프에서 (a) 파일 새 내용을 stdout으로 흘려 실시간 로그 유지 + (b) 활동 감지/heartbeat 발화
+- Step 1은 hang 감지 목적 (kill), Step 2는 false-positive 방지 목적 (heartbeat만)
+- 둘 다 `\r`-only 출력 문제 회피 (PowerShell이 stdout 받을 때 newline 단위로 처리되므로)
+
+### 알려진 경험치
+
+- robocopy 200MB 파일 단일: CR 231개 vs LF 31개 — 진행률은 거의 다 `\r`
+- BuildGraph는 정상 시 분당 수백 라인 출력 — 30분 timeout은 매우 안전한 임계값
+- watchdog 종료 시 exit code 124 (GNU timeout 관례)
+
 ## Horde / UBA 설정 (중요 — 헤매기 쉬움)
 
 설정 파일 위치: **`%PROGRAMDATA%\Unreal Engine\UnrealBuildTool\BuildConfiguration.xml`**
