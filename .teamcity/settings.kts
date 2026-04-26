@@ -159,11 +159,8 @@ object BuildEditor : BuildType({
                     chcp 65001 | Out-Null
                     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-                    # CleanMode가 FullRebuild면 UAT -clean 플래그 추가
-                    ${'$'}ExtraFlags = @()
                     if ('%CleanMode%' -eq 'FullRebuild') {
-                        Write-Host ">> CleanMode = FullRebuild → UAT -clean 적용"
-                        ${'$'}ExtraFlags += '-clean'
+                        Write-Host ">> CleanMode = FullRebuild → UAT -clean 적용 (아래 args에 추가됨)"
                     }
 
                     # Sub-step 1a: Generate project files (보통 1-2분, watchdog 불필요)
@@ -178,17 +175,20 @@ object BuildEditor : BuildType({
                     # 빌드 머신 성능을 고려해 전체 timeout 대신 무출력 hang만 감지하기 위함.
                     # 정상 빌드는 BuildGraph가 매 초 다수의 컴파일/링크 라인을 emit하므로
                     # 30분 무출력은 거의 확실히 hang 상태로 판단.
+                    #
+                    # 인자 처리: Start-Process -ArgumentList에 배열을 주면 공백 포함 인자 처리가
+                    # cmd.exe로 갈 때 따옴표가 깨짐. -target="Make Installed Build Win64"가
+                    # -target=Make / Installed / Build / Win64 4개로 쪼개져서 UAT가 fail함.
+                    # 해결: ArgumentList에 따옴표 박힌 단일 문자열로 전달 → cmd가 그대로 파싱.
                     ${'$'}uatLog = [System.IO.Path]::GetTempFileName()
-                    ${'$'}uatArgs = @('BuildGraph',
-                        '-script=Engine/Build/InstalledEngineBuild.xml',
-                        '-target=Make Installed Build Win64',
-                        '-set:WithDDC=false',
-                        '-set:HostPlatformOnly=true',
-                        '-set:GameConfigurations=Development') + ${'$'}ExtraFlags
+                    ${'$'}uatArgsStr = 'BuildGraph -script="Engine/Build/InstalledEngineBuild.xml" -target="Make Installed Build Win64" -set:WithDDC=false -set:HostPlatformOnly=true -set:GameConfigurations=Development'
+                    if ('%CleanMode%' -eq 'FullRebuild') {
+                        ${'$'}uatArgsStr += ' -clean'
+                    }
 
                     Write-Host ">> RunUAT BuildGraph 시작 (watchdog: 30분 무출력 시 종료)"
-                    Write-Host ">> args: ${'$'}(${'$'}uatArgs -join ' ')"
-                    ${'$'}uatProc = Start-Process -FilePath ".\Engine\Build\BatchFiles\RunUAT.bat" -ArgumentList ${'$'}uatArgs -RedirectStandardOutput ${'$'}uatLog -PassThru -NoNewWindow
+                    Write-Host ">> args: ${'$'}uatArgsStr"
+                    ${'$'}uatProc = Start-Process -FilePath ".\Engine\Build\BatchFiles\RunUAT.bat" -ArgumentList ${'$'}uatArgsStr -RedirectStandardOutput ${'$'}uatLog -PassThru -NoNewWindow
 
                     ${'$'}noOutputTimeoutMin = 30
                     ${'$'}lastSize = 0
