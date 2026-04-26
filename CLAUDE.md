@@ -130,6 +130,21 @@ while (!$proc.HasExited) {
 - BuildGraph는 정상 시 분당 수백 라인 출력 — 30분 timeout은 매우 안전한 임계값
 - watchdog 종료 시 exit code 124 (GNU timeout 관례)
 
+### Kotlin DSL ↔ PowerShell 함정: 백틱 line continuation
+Kotlin `"""..."""` raw string에서 PowerShell 백틱 line continuation을 쓸 때 **백틱 1개**만 써야 함.
+
+```kotlin
+// 틀림: 백틱 2개 → PowerShell이 escape된 literal backtick으로 해석
+${'$'}proc = Start-Process -FilePath '...' ``
+    -ArgumentList ${'$'}args ``
+    -PassThru
+
+// 맞음: 한 줄로 합치거나 백틱 1개
+${'$'}proc = Start-Process -FilePath '...' -ArgumentList ${'$'}args -PassThru
+```
+
+증상: `'-ArgumentList' 용어가 cmdlet, 함수, 스크립트 파일 또는 실행할 수 있는 프로그램 이름으로 인식되지 않습니다`. 빌드가 GenerateProjectFiles 직후 ~2분 만에 실패. (Build #23이 이걸로 fail함, 단일 라인으로 수정.)
+
 ## Horde / UBA 설정 (중요 — 헤매기 쉬움)
 
 설정 파일 위치: **`%PROGRAMDATA%\Unreal Engine\UnrealBuildTool\BuildConfiguration.xml`**
