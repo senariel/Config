@@ -190,39 +190,65 @@ object BuildEditor : BuildType({
                     Write-Host ">> args: ${'$'}uatArgsStr"
                     ${'$'}uatProc = Start-Process -FilePath ".\Engine\Build\BatchFiles\RunUAT.bat" -ArgumentList ${'$'}uatArgsStr -RedirectStandardOutput ${'$'}uatLog -PassThru -NoNewWindow
 
+                    # Watchdog: stdout과 UAT 자체 로그 파일 둘 다 감시.
+                    # UAT는 큰 파일 복사 등 일부 단계에서 stdout 침묵하지만 자체 로그
+                    # (Engine/Programs/AutomationTool/Saved/Logs/Log.txt)에는 계속 기록함.
+                    # 둘 중 하나라도 변하면 alive로 간주, 둘 다 N분 침묵하면 진짜 hang.
                     ${'$'}noOutputTimeoutMin = 30
-                    ${'$'}lastSize = 0
-                    ${'$'}lastChangeTime = Get-Date
+                    ${'$'}uatInternalLogPath = ".\Engine\Programs\AutomationTool\Saved\Logs\Log.txt"
+
+                    ${'$'}lastStdoutSize = 0
+                    ${'$'}lastStdoutChange = Get-Date
                     ${'$'}lastDisplaySize = 0
+
+                    ${'$'}lastInternalSize = -1   # -1 = 아직 파일을 본 적 없음
+                    ${'$'}lastInternalChange = Get-Date
+
                     ${'$'}killedByWatchdog = ${'$'}false
 
                     while (!${'$'}uatProc.HasExited) {
                         Start-Sleep -Seconds 30
 
-                        ${'$'}currentSize = if (Test-Path ${'$'}uatLog) { (Get-Item ${'$'}uatLog).Length } else { 0 }
-
-                        # 새로 쓰여진 로그 라인을 stdout으로 흘려보냄 (실시간 출력)
-                        if (${'$'}currentSize -gt ${'$'}lastDisplaySize) {
+                        # --- stdout (Start-Process로 redirect한 임시 파일) ---
+                        ${'$'}stdoutSize = if (Test-Path ${'$'}uatLog) { (Get-Item ${'$'}uatLog).Length } else { 0 }
+                        if (${'$'}stdoutSize -gt ${'$'}lastDisplaySize) {
                             ${'$'}fs = [System.IO.File]::Open(${'$'}uatLog, 'Open', 'Read', 'ReadWrite')
                             ${'$'}fs.Position = ${'$'}lastDisplaySize
                             ${'$'}sr = New-Object System.IO.StreamReader(${'$'}fs)
                             ${'$'}newContent = ${'$'}sr.ReadToEnd()
                             ${'$'}sr.Close(); ${'$'}fs.Close()
                             if (${'$'}newContent.Trim()) { Write-Host ${'$'}newContent }
-                            ${'$'}lastDisplaySize = ${'$'}currentSize
+                            ${'$'}lastDisplaySize = ${'$'}stdoutSize
+                        }
+                        if (${'$'}stdoutSize -ne ${'$'}lastStdoutSize) {
+                            ${'$'}lastStdoutChange = Get-Date
+                            ${'$'}lastStdoutSize = ${'$'}stdoutSize
                         }
 
-                        # 활동 감지: 로그 사이즈 변화 시 lastChangeTime 갱신
-                        if (${'$'}currentSize -ne ${'$'}lastSize) {
-                            ${'$'}lastChangeTime = Get-Date
-                            ${'$'}lastSize = ${'$'}currentSize
+                        # --- UAT 자체 로그 파일 ---
+                        if (Test-Path ${'$'}uatInternalLogPath) {
+                            ${'$'}internalSize = (Get-Item ${'$'}uatInternalLogPath).Length
+                            if (${'$'}lastInternalSize -lt 0 -or ${'$'}internalSize -ne ${'$'}lastInternalSize) {
+                                ${'$'}lastInternalChange = Get-Date
+                                ${'$'}lastInternalSize = ${'$'}internalSize
+                            }
+                        }
+                        # 파일이 아직 없으면 lastInternalChange 그대로 유지
+                        # (script 시작 시각이라 internalSilentMin이 빠르게 커짐 → Min에서 stdout이 dominant)
+
+                        # --- 활동 판단: stdout과 internal 중 더 최근 활동 사용 ---
+                        ${'$'}stdoutSilentMin = ((Get-Date) - ${'$'}lastStdoutChange).TotalMinutes
+                        ${'$'}internalSilentMin = ((Get-Date) - ${'$'}lastInternalChange).TotalMinutes
+                        ${'$'}silentMin = [Math]::Min(${'$'}stdoutSilentMin, ${'$'}internalSilentMin)
+
+                        # stdout 침묵이 5분 이상이면 watchdog 상태 한 번 출력 (heartbeat 역할 + 디버깅)
+                        if (${'$'}stdoutSilentMin -gt 5) {
+                            Write-Host ("[WATCHDOG] stdout silent {0:N1}m, UAT log silent {1:N1}m, alive (Min={2:N1}m < {3}m)" -f ${'$'}stdoutSilentMin, ${'$'}internalSilentMin, ${'$'}silentMin, ${'$'}noOutputTimeoutMin)
                         }
 
-                        ${'$'}silentMin = ((Get-Date) - ${'$'}lastChangeTime).TotalMinutes
-
-                        # 무출력 timeout 검사
+                        # 무출력 timeout 검사 (둘 다 침묵해야 발동)
                         if (${'$'}silentMin -ge ${'$'}noOutputTimeoutMin) {
-                            Write-Host "##teamcity[buildProblem description='[WATCHDOG] BuildGraph가 ${'$'}([int]${'$'}silentMin)분간 무출력 - hang 감지로 강제 종료']"
+                            Write-Host ("##teamcity[buildProblem description='[WATCHDOG] BuildGraph stdout AND UAT log 둘 다 {0}분간 무출력 - hang 감지로 강제 종료']" -f [int]${'$'}silentMin)
                             try { ${'$'}uatProc.Kill() } catch { Write-Host "[WATCHDOG] Kill failed: ${'$'}_" }
                             ${'$'}killedByWatchdog = ${'$'}true
                             break
