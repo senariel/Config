@@ -5,6 +5,7 @@ import jetbrains.buildServer.configs.kotlin.buildSteps.script
 import jetbrains.buildServer.configs.kotlin.failureConditions.BuildFailureOnText
 import jetbrains.buildServer.configs.kotlin.failureConditions.failOnText
 import jetbrains.buildServer.configs.kotlin.triggers.VcsTrigger
+import jetbrains.buildServer.configs.kotlin.triggers.schedule
 import jetbrains.buildServer.configs.kotlin.triggers.vcs
 import jetbrains.buildServer.configs.kotlin.vcs.GitVcsRoot
 
@@ -41,9 +42,10 @@ project {
         )
     }
 
+    buildType(SyncFork)
     buildType(FetchSource)
     buildType(BuildEditor)
-    buildTypesOrder = arrayListOf(FetchSource, BuildEditor)
+    buildTypesOrder = arrayListOf(SyncFork, FetchSource, BuildEditor)
 }
 
 // ==========================================================================
@@ -58,6 +60,126 @@ object EngineVcs : GitVcsRoot({
         userName = "oauth2"
         // EngineVcs 토큰 (DevPubApp으로 발급, 부트스트랩 시 VCS Auth Tokens에서 Copy ID로 획득)
         tokenId = "tc_token_id:CID_3ab2f5c96314802c7074714f2b03c3a5:-1:62ad1ec8-56b9-4b2a-adce-68a33ee027a2"
+    }
+})
+
+// ==========================================================================
+// Sync Fork: Epic 본가(EpicGames/UnrealEngine) → 포크(senariel/UnrealEngine) 최신화
+//   - 포크 자체는 자동 갱신되지 않으므로, 스케줄로 upstream을 당겨 release에 push
+//   - push가 발생하면 Build Editor의 VCS trigger가 전체 체인(FetchSource→BuildEditor) 실행
+//   - TeamCity 체크아웃 안 함(checkout 없음). 스텝이 SyncWorkDir에 전용 클론을 직접 관리
+//     (빌드용 UE5 체크아웃과 분리 → 빌드 진행 중 충돌 없음)
+//   - 현재는 커스텀 커밋이 없어 항상 fast-forward. 미래에 포크에 독자 커밋이 생기면
+//     3-way 머지로 처리하고, 충돌 시 abort+실패시켜 사람이 해결
+// ==========================================================================
+object SyncFork : BuildType({
+    name = "Sync Fork"
+    description = "EpicGames/UnrealEngine release를 포크(senariel/UnrealEngine)로 동기화. push 시 Build Editor 트리거가 체인 실행."
+
+    params {
+        param("SyncBranch", "release")
+        // 빌드 체크아웃과 분리된 전용 클론 위치 (에이전트에 영속). 첫 실행만 무거움.
+        param("SyncWorkDir", """%teamcity.agent.work.dir%\..\ue5-fork-sync""")
+        // GitHub PAT: senariel/UnrealEngine push + EpicGames/UnrealEngine fetch 권한 필요.
+        // one-way 모드라 값은 UI 비상절차로 주입 (CLAUDE.md "비밀값 주입" 참조).
+        password(
+            "env.GIT_PUSH_TOKEN", "",
+            label = "GitHub Push/Fetch PAT",
+            description = "senariel/UnrealEngine push + EpicGames/UnrealEngine fetch 권한 토큰",
+            display = ParameterDisplay.HIDDEN
+        )
+    }
+
+    // VCS Root 미부착 — 엔진 트리를 TeamCity가 체크아웃하지 않음 (스텝이 직접 git 관리)
+
+    steps {
+        powerShell {
+            name = "Sync fork from upstream"
+            id = "Sync_fork_from_upstream"
+            scriptMode = script {
+                content = """
+                    ${'$'}ErrorActionPreference = 'Stop'
+                    ${'$'}branch  = '%SyncBranch%'
+                    ${'$'}workDir = '%SyncWorkDir%'
+                    ${'$'}token   = ${'$'}env:GIT_PUSH_TOKEN
+                    if ([string]::IsNullOrEmpty(${'$'}token)) {
+                        throw 'GIT_PUSH_TOKEN 미설정 - Sync Fork 파라미터(env.GIT_PUSH_TOKEN) 확인'
+                    }
+
+                    ${'$'}origin   = "https://x-access-token:${'$'}token@github.com/senariel/UnrealEngine.git"
+                    ${'$'}upstream = "https://x-access-token:${'$'}token@github.com/EpicGames/UnrealEngine.git"
+
+                    Write-Host ">> workDir=${'$'}workDir branch=${'$'}branch"
+
+                    if (-not (Test-Path (Join-Path ${'$'}workDir '.git'))) {
+                        Write-Host ">> 최초 클론 (release 단일 브랜치, 수십 GB - 처음만 오래 걸림)"
+                        git clone --branch ${'$'}branch --single-branch ${'$'}origin ${'$'}workDir
+                        if (${'$'}LASTEXITCODE -ne 0) { throw 'clone 실패' }
+                    }
+
+                    git -C ${'$'}workDir remote set-url origin ${'$'}origin
+                    git -C ${'$'}workDir remote remove upstream 2>${'$'}null
+                    git -C ${'$'}workDir remote add upstream ${'$'}upstream
+
+                    Write-Host ">> origin fetch + 정렬"
+                    git -C ${'$'}workDir fetch origin ${'$'}branch
+                    if (${'$'}LASTEXITCODE -ne 0) { throw 'origin fetch 실패' }
+                    git -C ${'$'}workDir checkout -B ${'$'}branch "origin/${'$'}branch"
+                    if (${'$'}LASTEXITCODE -ne 0) { throw 'checkout 실패' }
+                    git -C ${'$'}workDir reset --hard "origin/${'$'}branch"
+
+                    Write-Host ">> upstream fetch"
+                    git -C ${'$'}workDir fetch upstream ${'$'}branch
+                    if (${'$'}LASTEXITCODE -ne 0) { throw 'upstream fetch 실패' }
+
+                    # 이미 최신? (upstream/branch가 HEAD의 조상이면 받을 게 없음)
+                    git -C ${'$'}workDir merge-base --is-ancestor "upstream/${'$'}branch" HEAD
+                    if (${'$'}LASTEXITCODE -eq 0) {
+                        Write-Host '>> 이미 최신 - 변경 없음'
+                        exit 0
+                    }
+
+                    # 1) fast-forward 시도 (커스텀 커밋 없을 때 = 현재 상태)
+                    git -C ${'$'}workDir merge --ff-only "upstream/${'$'}branch"
+                    if (${'$'}LASTEXITCODE -eq 0) {
+                        Write-Host '>> fast-forward 동기화'
+                    } else {
+                        # 2) 분기됨 -> 3-way 머지 (미래에 포크 독자 커밋 생길 때)
+                        Write-Host '>> 분기 감지 - 머지 시도'
+                        git -C ${'$'}workDir merge --no-edit "upstream/${'$'}branch"
+                        if (${'$'}LASTEXITCODE -ne 0) {
+                            git -C ${'$'}workDir merge --abort
+                            throw "upstream 머지 충돌 - 수동 해결 필요 (origin/${'$'}branch 로컬 머지 후 push)"
+                        }
+                    }
+
+                    git -C ${'$'}workDir push origin "HEAD:refs/heads/${'$'}branch"
+                    if (${'$'}LASTEXITCODE -ne 0) { throw 'push 실패' }
+                    Write-Host '>> 동기화 완료 - push 됨 (Build Editor VCS 트리거가 체인 실행)'
+                """.trimIndent()
+            }
+        }
+    }
+
+    triggers {
+        // 매일 03:00(서버 시간) 포크 최신화. 변경 없으면 push 안 함 → 체인도 안 돎.
+        schedule {
+            schedulingPolicy = daily {
+                hour = 3
+                minute = 0
+            }
+            triggerBuild = always()
+            withPendingChangesOnly = false
+        }
+    }
+
+    features {
+        perfmon {
+        }
+    }
+
+    requirements {
+        contains("teamcity.agent.jvm.os.name", "Windows 11")
     }
 })
 
