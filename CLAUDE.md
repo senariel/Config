@@ -27,7 +27,7 @@ TeamCity 프로젝트 트리
 └── DevPub                              (UI-managed 일반 폴더, 카테고리)
     └── UnrealEngine5                   (One-way VS, 이 repo와 연결)
         ├── 파라미터: CleanMode (NORMAL display)
-        ├── Sync Fork                   (스케줄 트리거, 포크를 upstream과 동기화 후 push)
+        ├── Sync Fork                   (스케줄 트리거, GitHub merge-upstream API로 포크 동기화)
         ├── Fetch Source                (트리거 없음)
         └── Build Editor                (VCS trigger 보유, snapshot dep로 FetchSource 선행)
 ```
@@ -40,22 +40,20 @@ TeamCity 프로젝트 트리
 
 엔진 repo(`senariel/UnrealEngine`)는 Epic 본가(`EpicGames/UnrealEngine`)의 포크지만 **자동 갱신되지 않음** → 새 엔진 버전이 들어오지 않아 빌드 체인이 영영 안 돎.
 
-**Sync Fork**가 이를 해결: 매일 03:00(서버 시간) upstream의 `release`를 받아 포크 `release`에 push. push로 새 커밋이 생기면 아래 트리거 흐름의 `[엔진 repo commit]`이 자동 발생.
+**Sync Fork**가 이를 해결: 매일 03:00(서버 시간) **GitHub 서버사이드 fork 동기화 API**(`merge-upstream`)를 호출해 upstream `release`를 포크 `release`에 ff/merge. 갱신이 생기면 아래 트리거 흐름의 `[엔진 repo commit]`이 자동 발생.
 
 ```
-[스케줄 03:00] → [Sync Fork: upstream fetch → ff/merge → origin push]
+[스케줄 03:00] → [Sync Fork: POST /repos/senariel/UnrealEngine/merge-upstream {branch:release}]
         │
-        ▼ (포크 release에 새 커밋)
+        ▼ (merge_type=fast-forward|merge → 포크 release 갱신)
 [엔진 repo commit]  ── 아래 흐름으로 연결
 ```
 
-- **체크아웃 분리**: Sync Fork는 TeamCity VCS 체크아웃을 쓰지 않고, `SyncWorkDir`(`%teamcity.agent.work.dir%\..\ue5-fork-sync`)에 release 단일 브랜치 전용 클론을 직접 관리. 빌드용 `UE5` 체크아웃과 분리되어 빌드 진행 중에 돌아도 충돌 없음.
-- **머지 전략**: 현재 포크에 독자 커밋이 없어 항상 fast-forward. 미래에 커스텀 엔진 수정이 생기면 자동 3-way 머지, **충돌 시 `merge --abort` 후 빌드 실패**(자동 충돌 해결 금지 — 사람이 처리).
-- **비밀값 주입(`env.GIT_PUSH_TOKEN`)**: one-way 모드라 UI가 read-only. 토큰 값은 아래 절차로 주입 —
-  1. UnrealEngine5 → Versioned Settings → **Synchronization disabled**
-  2. Sync Fork → Parameters → `env.GIT_PUSH_TOKEN`에 GitHub PAT 입력 (senariel/UnrealEngine push + EpicGames/UnrealEngine fetch 권한)
-  3. **Synchronization enabled** 다시 켜기 (kts엔 빈 값 placeholder만 두고 실제 값은 서버 credentials에 저장됨)
-- **PAT 권한**: 해당 GitHub 계정이 EpicGames org 멤버여야 upstream(private) fetch 가능.
+- **클론 없음**: GitHub 서버에서 동기화가 끝나므로 에이전트에 엔진 트리를 받지 않음(디스크 0, 거의 즉시). 빌드용 `UE5` 체크아웃과 완전 분리.
+- **전제**: `senariel/UnrealEngine`이 `EpicGames/UnrealEngine`의 **정식 GitHub fork**(repo `parent` 관계 존재)여야 merge-upstream 동작. (독립 미러였다면 API 불가 → 로컬 clone+merge 방식으로 회귀해야 함.)
+- **응답 처리**: `merge_type` = `fast-forward`/`merge`면 갱신, `none`이면 이미 최신(체인 트리거 안 됨). **409**(분기·충돌)면 빌드 실패시켜 사람이 수동 머지 — 미래에 포크 독자 커밋이 생겨 자동 ff가 안 될 때.
+- **비밀값(`env.GIT_PUSH_TOKEN`)**: GitHub PAT(classic, `repo` 스코프, EpicGames org 멤버 계정). one-way 모드에서 UI 비상절차(Sync disabled → 값 입력 → enabled)로 주입하면 TeamCity가 `credentialsJSON:<uuid>` 토큰으로 서버 credentials에 저장하고 kts에 그 참조를 써넣음(되써짐). **kts의 `credentialsJSON:...` 참조는 실제 토큰이므로 절대 빈 값으로 되돌리지 말 것.**
+- **PAT 권한**: 해당 GitHub 계정이 EpicGames org 멤버여야 upstream(private) 동기화 가능.
 
 ## 빌드 체인 트리거 흐름
 
@@ -271,6 +269,7 @@ CLAUDE.md               ← 이 파일
 
 - 2026-04: 초기 Versioned Settings 도입. CleanMode/finishBuildTrigger 추가, robocopy /MIR 발견.
 - 2026-04 (2차): One-way 모드로 전환, VCS trigger를 Build Editor에 통합, Failure Conditions 추가, 부트스트랩 절차 정립.
+- 2026-06: **Sync Fork** 추가 — 포크가 upstream에서 자동 갱신되지 않던 문제 해결. 초안은 로컬 clone+merge였으나, 정식 fork임을 확인 후 GitHub `merge-upstream` API(클론 0)로 교체.
 
 ## 다음에 할 만한 것 (TODO 후보)
 

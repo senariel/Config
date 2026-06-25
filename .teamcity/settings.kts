@@ -340,8 +340,7 @@ object SyncFork : BuildType({
     description = "EpicGames/UnrealEngine release를 포크(senariel/UnrealEngine)로 동기화. push 시 Build Editor 트리거가 체인 실행."
 
     params {
-        param("SyncWorkDir", """%teamcity.agent.work.dir%\..\ue5-fork-sync""")
-        password("env.GIT_PUSH_TOKEN", "credentialsJSON:9db31541-e004-4b5a-a9f4-7c10108866f3", label = "GitHub Push/Fetch PAT", description = "senariel/UnrealEngine push + EpicGames/UnrealEngine fetch 권한 토큰", display = ParameterDisplay.HIDDEN)
+        password("env.GIT_PUSH_TOKEN", "credentialsJSON:9db31541-e004-4b5a-a9f4-7c10108866f3", label = "GitHub Push/Fetch PAT", description = "senariel/UnrealEngine fork 동기화용 GitHub PAT (repo 스코프, EpicGames org 멤버)", display = ParameterDisplay.HIDDEN)
         param("SyncBranch", "release")
     }
 
@@ -352,63 +351,51 @@ object SyncFork : BuildType({
             scriptMode = script {
                 content = """
                     ${'$'}ErrorActionPreference = 'Stop'
-                    ${'$'}branch  = '%SyncBranch%'
-                    ${'$'}workDir = '%SyncWorkDir%'
-                    ${'$'}token   = ${'$'}env:GIT_PUSH_TOKEN
+                    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                    ${'$'}branch = '%SyncBranch%'
+                    ${'$'}token  = ${'$'}env:GIT_PUSH_TOKEN
                     if ([string]::IsNullOrEmpty(${'$'}token)) {
                         throw 'GIT_PUSH_TOKEN 미설정 - Sync Fork 파라미터(env.GIT_PUSH_TOKEN) 확인'
                     }
-                    
-                    ${'$'}origin   = "https://x-access-token:${'$'}token@github.com/senariel/UnrealEngine.git"
-                    ${'$'}upstream = "https://x-access-token:${'$'}token@github.com/EpicGames/UnrealEngine.git"
-                    
-                    Write-Host ">> workDir=${'$'}workDir branch=${'$'}branch"
-                    
-                    if (-not (Test-Path (Join-Path ${'$'}workDir '.git'))) {
-                        Write-Host ">> 최초 클론 (release 단일 브랜치, 수십 GB - 처음만 오래 걸림)"
-                        git clone --branch ${'$'}branch --single-branch ${'$'}origin ${'$'}workDir
-                        if (${'$'}LASTEXITCODE -ne 0) { throw 'clone 실패' }
+
+                    # GitHub 서버사이드 fork 동기화 (clone 불필요).
+                    # senariel/UnrealEngine 은 EpicGames/UnrealEngine 의 정식 fork → merge-upstream 으로
+                    # upstream release 를 fork release 에 ff/merge. push 가 생기면 Build Editor VCS 트리거가 체인 실행.
+                    ${'$'}repo = 'senariel/UnrealEngine'
+                    ${'$'}headers = @{
+                        Authorization          = "Bearer ${'$'}token"
+                        'User-Agent'           = 'teamcity-sync-fork'
+                        Accept                 = 'application/vnd.github+json'
+                        'X-GitHub-Api-Version' = '2022-11-28'
                     }
-                    
-                    git -C ${'$'}workDir remote set-url origin ${'$'}origin
-                    git -C ${'$'}workDir remote remove upstream 2>${'$'}null
-                    git -C ${'$'}workDir remote add upstream ${'$'}upstream
-                    
-                    Write-Host ">> origin fetch + 정렬"
-                    git -C ${'$'}workDir fetch origin ${'$'}branch
-                    if (${'$'}LASTEXITCODE -ne 0) { throw 'origin fetch 실패' }
-                    git -C ${'$'}workDir checkout -B ${'$'}branch "origin/${'$'}branch"
-                    if (${'$'}LASTEXITCODE -ne 0) { throw 'checkout 실패' }
-                    git -C ${'$'}workDir reset --hard "origin/${'$'}branch"
-                    
-                    Write-Host ">> upstream fetch"
-                    git -C ${'$'}workDir fetch upstream ${'$'}branch
-                    if (${'$'}LASTEXITCODE -ne 0) { throw 'upstream fetch 실패' }
-                    
-                    # 이미 최신? (upstream/branch가 HEAD의 조상이면 받을 게 없음)
-                    git -C ${'$'}workDir merge-base --is-ancestor "upstream/${'$'}branch" HEAD
-                    if (${'$'}LASTEXITCODE -eq 0) {
-                        Write-Host '>> 이미 최신 - 변경 없음'
-                        exit 0
-                    }
-                    
-                    # 1) fast-forward 시도 (커스텀 커밋 없을 때 = 현재 상태)
-                    git -C ${'$'}workDir merge --ff-only "upstream/${'$'}branch"
-                    if (${'$'}LASTEXITCODE -eq 0) {
-                        Write-Host '>> fast-forward 동기화'
-                    } else {
-                        # 2) 분기됨 -> 3-way 머지 (미래에 포크 독자 커밋 생길 때)
-                        Write-Host '>> 분기 감지 - 머지 시도'
-                        git -C ${'$'}workDir merge --no-edit "upstream/${'$'}branch"
-                        if (${'$'}LASTEXITCODE -ne 0) {
-                            git -C ${'$'}workDir merge --abort
-                            throw "upstream 머지 충돌 - 수동 해결 필요 (origin/${'$'}branch 로컬 머지 후 push)"
+                    ${'$'}body = @{ branch = ${'$'}branch } | ConvertTo-Json
+
+                    Write-Host ">> GitHub fork 동기화 요청: ${'$'}repo (branch=${'$'}branch)"
+                    try {
+                        ${'$'}resp = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/${'$'}repo/merge-upstream" -Headers ${'$'}headers -Body ${'$'}body -ContentType 'application/json'
+                        Write-Host (">> merge_type = {0}" -f ${'$'}resp.merge_type)
+                        Write-Host (">> base_branch = {0}" -f ${'$'}resp.base_branch)
+                        Write-Host (">> message     = {0}" -f ${'$'}resp.message)
+                        if (${'$'}resp.merge_type -eq 'none') {
+                            Write-Host '>> 이미 최신 - 변경 없음 (체인 트리거 안 됨)'
+                        } else {
+                            Write-Host '>> 포크 갱신됨 - Build Editor VCS 트리거가 체인 실행'
                         }
+                    } catch {
+                        ${'$'}code = -1
+                        ${'$'}detail = ''
+                        if (${'$'}_.Exception.Response) {
+                            ${'$'}code = [int]${'$'}_.Exception.Response.StatusCode
+                            try {
+                                ${'$'}rs = ${'$'}_.Exception.Response.GetResponseStream()
+                                ${'$'}detail = (New-Object System.IO.StreamReader(${'$'}rs)).ReadToEnd()
+                            } catch {}
+                        }
+                        if (${'$'}code -eq 409) {
+                            throw "fork 동기화 충돌(409) - upstream 과 분기됨(포크 독자 커밋 존재). 수동 머지 필요. 상세: ${'$'}detail"
+                        }
+                        throw "merge-upstream 실패 (HTTP ${'$'}code): ${'$'}detail"
                     }
-                    
-                    git -C ${'$'}workDir push origin "HEAD:refs/heads/${'$'}branch"
-                    if (${'$'}LASTEXITCODE -ne 0) { throw 'push 실패' }
-                    Write-Host '>> 동기화 완료 - push 됨 (Build Editor VCS 트리거가 체인 실행)'
                 """.trimIndent()
             }
         }
