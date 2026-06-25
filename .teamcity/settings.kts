@@ -164,7 +164,10 @@ object BuildEditor : BuildType({
                         # 무출력 timeout 검사 (둘 다 침묵해야 발동)
                         if (${'$'}silentMin -ge ${'$'}noOutputTimeoutMin) {
                             Write-Host ("##teamcity[buildProblem description='[WATCHDOG] BuildGraph stdout AND UAT log 둘 다 {0}분간 무출력 - hang 감지로 강제 종료']" -f [int]${'$'}silentMin)
-                            try { ${'$'}uatProc.Kill() } catch { Write-Host "[WATCHDOG] Kill failed: ${'$'}_" }
+                            # 프로세스 트리 전체 종료 (.Kill()은 RunUAT 부모만 죽여 UBT/UBA 좀비가 뮤텍스 점유 → 다음 빌드 ConflictingInstance)
+                            try { taskkill /T /F /PID ${'$'}uatProc.Id 2>${'$'}null | Out-Null } catch { Write-Host "[WATCHDOG] tree kill 실패: ${'$'}_" }
+                            # 트리에서 분리됐을 수 있는 UBT/UBA 잔류 정리 (watchdog 발동 시 이 빌드가 유일 → 안전)
+                            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { ${'$'}_.Name -match 'UbaAgent|UbaServer' -or ${'$'}_.CommandLine -match 'UnrealBuildTool|AutomationTool' } | ForEach-Object { try { Stop-Process -Id ${'$'}_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }
                             ${'$'}killedByWatchdog = ${'$'}true
                             break
                         }
