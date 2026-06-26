@@ -53,6 +53,8 @@ object BuildEditor : BuildType({
 
     params {
         param("env.UE5_DIST_PATH", """D:\Shared\UE5""")
+        // 동시 실행 액션 수 상한 (OOM 완화). 빈값/0 = 엔진 기본. 스텝이 에이전트 BuildConfiguration.xml에 머지.
+        param("MaxParallelActions", "10")
     }
 
     vcs {
@@ -73,7 +75,35 @@ object BuildEditor : BuildType({
                     # UTF-8 codepage (cmd의 chcp 65001 대응)
                     chcp 65001 | Out-Null
                     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-                    
+
+                    # MaxParallelActions를 머신 BuildConfiguration.xml에 안전 머지 (Horde 등 기존 설정 보존, 엔진 소스/repo 무관).
+                    # XML 파싱으로 해당 노드만 갱신/제거 → 다른 설정 안 건드림.
+                    ${'$'}mpa = '%MaxParallelActions%'
+                    ${'$'}bcFile = Join-Path ${'$'}env:ProgramData 'Unreal Engine\UnrealBuildTool\BuildConfiguration.xml'
+                    ${'$'}nsUri = 'https://www.unrealengine.com/BuildConfiguration'
+                    if (Test-Path ${'$'}bcFile) {
+                        [xml]${'$'}doc = Get-Content -Raw ${'$'}bcFile
+                        ${'$'}nsm = New-Object System.Xml.XmlNamespaceManager(${'$'}doc.NameTable)
+                        ${'$'}nsm.AddNamespace('u', ${'$'}nsUri)
+                        ${'$'}bc = ${'$'}doc.SelectSingleNode('/u:Configuration/u:BuildConfiguration', ${'$'}nsm)
+                        ${'$'}node = if (${'$'}bc) { ${'$'}bc.SelectSingleNode('u:MaxParallelActions', ${'$'}nsm) } else { ${'$'}null }
+                        if (${'$'}mpa -and ${'$'}mpa.Trim() -and ${'$'}mpa.Trim() -ne '0') {
+                            if (-not ${'$'}bc) { ${'$'}bc = ${'$'}doc.CreateElement('BuildConfiguration', ${'$'}nsUri); [void]${'$'}doc.DocumentElement.AppendChild(${'$'}bc) }
+                            if (-not ${'$'}node) { ${'$'}node = ${'$'}doc.CreateElement('MaxParallelActions', ${'$'}nsUri); [void]${'$'}bc.AppendChild(${'$'}node) }
+                            ${'$'}node.InnerText = ${'$'}mpa.Trim()
+                            ${'$'}doc.Save(${'$'}bcFile)
+                            Write-Host (">> MaxParallelActions=" + ${'$'}mpa.Trim() + " merged into BuildConfiguration.xml (Horde preserved)")
+                        } elseif (${'$'}node) {
+                            [void]${'$'}node.ParentNode.RemoveChild(${'$'}node)
+                            ${'$'}doc.Save(${'$'}bcFile)
+                            Write-Host ">> MaxParallelActions cleared - engine default parallelism"
+                        } else {
+                            Write-Host ">> MaxParallelActions not set - engine default parallelism"
+                        }
+                    } else {
+                        Write-Host ">> BuildConfiguration.xml not found on agent - skipping MaxParallelActions"
+                    }
+
                     if ('%CleanMode%' -eq 'FullRebuild') {
                         Write-Host ">> CleanMode = FullRebuild → UAT -clean 적용 (아래 args에 추가됨)"
                     }
