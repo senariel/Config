@@ -145,6 +145,7 @@ object BuildEditor : BuildType({
                     ${'$'}lastDisplaySize = 0
                     ${'$'}lastActivity = Get-Date
                     ${'$'}lastNewestTicks = 0
+                    ${'$'}lastIoTotal = 0
                     ${'$'}killedByWatchdog = ${'$'}false
                     
                     while (!${'$'}uatProc.HasExited) {
@@ -173,6 +174,20 @@ object BuildEditor : BuildType({
                             }
                         }
                         if (${'$'}newest -gt ${'$'}lastNewestTicks) { ${'$'}lastNewestTicks = ${'$'}newest; ${'$'}lastActivity = Get-Date }
+
+                        # --- 추가 신호: 빌드 프로세스 트리의 누적 I/O 바이트 ---
+                        # 파일 mtime이 못 잡는 단계(예: Make Installed Build의 LocalBuilds 대용량 복사) 커버.
+                        # RunUAT 자손 트리의 ReadTransferCount+WriteTransferCount 합이 늘면 alive.
+                        ${'$'}ioTotal = 0
+                        try {
+                            ${'$'}allProc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
+                            ${'$'}tree = @{}; ${'$'}tree[[int]${'$'}uatProc.Id] = ${'$'}true
+                            for (${'$'}pass = 0; ${'$'}pass -lt 8; ${'$'}pass++) {
+                                foreach (${'$'}pr in ${'$'}allProc) { if (${'$'}tree[[int]${'$'}pr.ParentProcessId] -and -not ${'$'}tree[[int]${'$'}pr.ProcessId]) { ${'$'}tree[[int]${'$'}pr.ProcessId] = ${'$'}true } }
+                            }
+                            foreach (${'$'}pr in ${'$'}allProc) { if (${'$'}tree[[int]${'$'}pr.ProcessId]) { ${'$'}ioTotal += [int64]${'$'}pr.ReadTransferCount + [int64]${'$'}pr.WriteTransferCount } }
+                        } catch {}
+                        if (${'$'}ioTotal -gt ${'$'}lastIoTotal) { ${'$'}lastIoTotal = ${'$'}ioTotal; ${'$'}lastActivity = Get-Date }
 
                         ${'$'}silentMin = ((Get-Date) - ${'$'}lastActivity).TotalMinutes
                         if (${'$'}silentMin -gt 10) {
