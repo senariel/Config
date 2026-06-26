@@ -107,23 +107,24 @@ TeamCity 프로젝트 트리
 
 **해결**: 두 PowerShell 스텝(BuildGraph, Distribute)을 모두 watchdog로 감싸서 무출력 hang을 강제 종료.
 
-### Step 1 (BuildGraph) — Watchdog (30분 무출력 시 kill)
+### Step 1 (BuildGraph) — Watchdog (60분 무활동 시 kill)
+
+**'무출력'이 아니라 '무활동(파일 변경 없음)'으로 판정한다.** UBA 원격 분산 빌드는 stdout이 수십 분 조용해도 정상이기 때문(빌드 #31 오탐, 함정 #13). 활동 신호 = 다음 중 가장 최근 수정시각:
+- stdout 임시 redirect 파일
+- `Engine/Programs/AutomationTool/Saved/Logs/*` (UAT/BuildGraph 로그 + `UBA-*.txt`)
+- `Engine/Programs/UnrealBuildTool/{Log.txt, Trace.uba}`
 
 ```powershell
-$proc = Start-Process -FilePath ".\Engine\Build\BatchFiles\RunUAT.bat" `
-    -ArgumentList @('BuildGraph', ...) `
-    -RedirectStandardOutput $tmpLog `
-    -PassThru -NoNewWindow
-
+$proc = Start-Process -FilePath ".\Engine\Build\BatchFiles\RunUAT.bat" -ArgumentList $args -RedirectStandardOutput $tmpLog -PassThru -NoNewWindow
 while (!$proc.HasExited) {
     Start-Sleep -Seconds 30
-    # 새 로그 라인 stdout으로 흘림
-    # 로그 사이즈 변화 감지 → lastChangeTime 갱신
-    # 30분 무변화 시 taskkill /T /F (트리 전체) + UBA/UBT 잔류 정리 + exit 124
+    # stdout 새 내용 콘솔로 흘림 (실시간 로그)
+    # 활동신호(위 파일/디렉터리들의 newest mtime)가 갱신되면 lastActivity 리셋
+    # 60분 무변화 시 taskkill /T /F (트리 전체) + UBA/UBT 잔류 정리 + exit 124
 }
 ```
 
-이유: BuildGraph는 정상 동작 시 매 초 다수의 컴파일/링크 라인 emit. 30분 무출력은 거의 확실히 hang.
+이유: 정상 빌드도 (a) UBT 의존성 분석(8000+ 액션, ~27분 무출력), (b) UBA가 느린 단일 워커로 원격 컴파일 시 완료 배치까지 무출력 — 둘 다 stdout만 보면 오탐. 파일 활동을 보면 살아있음을 안다. 그래도 안 변하면(예: Horde 연결 대기) 진짜 hang.
 
 **중요 — 반드시 트리 전체를 죽일 것.** `$proc.Kill()`은 RunUAT **부모만** 죽이고 손자(UnrealBuildTool=dotnet, UbaServer/UbaAgent)는 남긴다. 좀비 UBT가 `Global\UnrealBuildTool_Mutex_...`를 계속 쥐어 **다음 빌드가 GenerateProjectFiles에서 `ConflictingInstance`로 실패**한다(함정 #11). 그래서 `taskkill /T /F /PID $proc.Id`로 트리 전체를 죽이고, 분리됐을 수 있는 UBA/UBT를 `Get-CimInstance Win32_Process`로 한 번 더 정리한다. (`.Kill($true)` 트리 종료는 .NET Framework/PowerShell 5.1엔 없음.)
 
@@ -149,7 +150,7 @@ while (!$proc.HasExited) {
 ### 알려진 경험치
 
 - robocopy 200MB 파일 단일: CR 231개 vs LF 31개 — 진행률은 거의 다 `\r`
-- BuildGraph는 정상 시 분당 수백 라인 출력 — 30분 timeout은 매우 안전한 임계값
+- (옛 가정) "BuildGraph는 분당 수백 라인 → 30분이면 안전"은 **UBA 원격 분산에서 깨짐**. 원격 컴파일·의존성 분석은 수십 분 무출력 가능 → 파일활동 기반 + 60분으로 변경 (함정 #13)
 - watchdog 종료 시 exit code 124 (GNU timeout 관례)
 
 ### Kotlin DSL ↔ PowerShell 함정: 백틱 line continuation
@@ -272,6 +273,15 @@ Get-CimInstance Win32_Process | Where-Object {
 ### 12. Horde 서버 주소 오설정 → UBA 무한 재시도 hang
 UBA executor가 Horde에 `GET http://<server>:13340/api/v1/server/auth`로 인증 시도. 주소가 틀리면(예: 에이전트 IP가 DHCP로 바뀜) `failed ((null))` 무한 재시도 → 무출력 → watchdog가 exit 124로 kill. 주소는 **에이전트의** `%PROGRAMDATA%\Unreal Engine\UnrealBuildTool\BuildConfiguration.xml` 의 `<Horde><Server>`. (git 관리 밖, 머신 로컬.) 같은 머신이면 `http://localhost:13340` 권장.
 
+### 13. watchdog 오탐 — UBA 원격 분산 시 장시간 무출력(정상인데 kill)
+증상: 빌드가 컴파일 도중(예: `[2218/8353]`) exit 124로 죽는데 **컴파일 에러는 없음**. 로그에 `[RemoteExecutor: <worker>]` 보임.
+
+원인: Horde/UBA가 원격 워커로 컴파일을 분산하면 로컬 stdout이 수십 분 조용함(완료 배치 단위로만 `[N/8353]` 출력). UBT 의존성 분석 단계(~27분)도 무출력. 옛 watchdog는 stdout/Log.txt만 봐서 정상 빌드를 hang으로 오판.
+
+해결: watchdog를 **파일 활동(`Saved/Logs`의 `UBA-*.txt` 등 newest mtime)** 기반으로 변경 + 임계값 30→60분 (Watchdog 섹션). **쿠킹/패키징도 같은 위험** → 각 단계 추가 시 그 산출물 디렉터리(`Saved/Cooked`, `Saved/StagedBuilds` 등)를 활동 신호 `$activityDirs`에 포함할 것.
+
+성능 참고: 단일 워커(예: 노트북 1대)가 8000+ 모듈을 받으면 느려 무활동 구간이 길어짐 — UBA 워커 증설/로컬 코어 병행으로 완화(아래 에이전트 설정 참조).
+
 ## 파일 구조
 
 ```
@@ -289,6 +299,7 @@ CLAUDE.md               ← 이 파일
 - 2026-04 (2차): One-way 모드로 전환, VCS trigger를 Build Editor에 통합, Failure Conditions 추가, 부트스트랩 절차 정립.
 - 2026-06: **Sync Fork** 추가 — 포크가 upstream에서 자동 갱신되지 않던 문제 해결. 초안은 로컬 clone+merge였으나, 정식 fork임을 확인 후 GitHub `merge-upstream` API(클론 0)로 교체.
 - 2026-06 (2차): watchdog kill을 `taskkill /T /F`(트리 전체)+UBA/UBT 잔류 정리로 수정 — `.Kill()`이 부모만 죽여 좀비가 뮤텍스 점유 → `ConflictingInstance` 유발하던 문제(함정 #11, #12).
+- 2026-06 (3차): watchdog를 '무출력'→'무활동(파일 mtime)' 기반으로 재설계 + 임계값 60분 + buildProblem 메시지 ASCII화. UBA 원격 분산 빌드가 정상인데 죽던 오탐 해결(함정 #13).
 
 ## 다음에 할 만한 것 (TODO 후보)
 

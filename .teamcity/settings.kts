@@ -101,24 +101,20 @@ object BuildEditor : BuildType({
                         ${'$'}uatArgsStr += ' -clean'
                     }
                     
-                    Write-Host ">> RunUAT BuildGraph 시작 (watchdog: 30분 무출력 시 종료)"
+                    Write-Host ">> RunUAT BuildGraph 시작 (watchdog: 60분 무활동 시 종료)"
                     Write-Host ">> args: ${'$'}uatArgsStr"
                     ${'$'}uatProc = Start-Process -FilePath ".\Engine\Build\BatchFiles\RunUAT.bat" -ArgumentList ${'$'}uatArgsStr -RedirectStandardOutput ${'$'}uatLog -PassThru -NoNewWindow
                     
-                    # Watchdog: stdout과 UAT 자체 로그 파일 둘 다 감시.
-                    # UAT는 큰 파일 복사 등 일부 단계에서 stdout 침묵하지만 자체 로그
-                    # (Engine/Programs/AutomationTool/Saved/Logs/Log.txt)에는 계속 기록함.
-                    # 둘 중 하나라도 변하면 alive로 간주, 둘 다 N분 침묵하면 진짜 hang.
-                    ${'$'}noOutputTimeoutMin = 30
-                    ${'$'}uatInternalLogPath = ".\Engine\Programs\AutomationTool\Saved\Logs\Log.txt"
-                    
-                    ${'$'}lastStdoutSize = 0
-                    ${'$'}lastStdoutChange = Get-Date
+                    # Watchdog: '무출력'이 아니라 '무활동(파일 변경 없음)'으로 hang 판정.
+                    # UBA 원격 분산/쿠킹/패키징은 stdout이 수십 분 조용해도 정상(빌드 #31 오탐).
+                    # stdout 임시파일 + UAT/UBA 로그(Saved/Logs) + UBT 로그의 '최신 수정시각'이
+                    # 하나라도 갱신되면 alive. 전부 N분 정지해야 진짜 hang으로 보고 트리 종료.
+                    ${'$'}noOutputTimeoutMin = 60
+                    ${'$'}activityFiles = @(".\Engine\Programs\UnrealBuildTool\Log.txt", ".\Engine\Programs\UnrealBuildTool\Trace.uba")
+                    ${'$'}activityDirs  = @(".\Engine\Programs\AutomationTool\Saved\Logs")
                     ${'$'}lastDisplaySize = 0
-                    
-                    ${'$'}lastInternalSize = -1   # -1 = 아직 파일을 본 적 없음
-                    ${'$'}lastInternalChange = Get-Date
-                    
+                    ${'$'}lastActivity = Get-Date
+                    ${'$'}lastNewestTicks = 0
                     ${'$'}killedByWatchdog = ${'$'}false
                     
                     while (!${'$'}uatProc.HasExited) {
@@ -135,37 +131,29 @@ object BuildEditor : BuildType({
                             if (${'$'}newContent.Trim()) { Write-Host ${'$'}newContent }
                             ${'$'}lastDisplaySize = ${'$'}stdoutSize
                         }
-                        if (${'$'}stdoutSize -ne ${'$'}lastStdoutSize) {
-                            ${'$'}lastStdoutChange = Get-Date
-                            ${'$'}lastStdoutSize = ${'$'}stdoutSize
+                        # --- 활동 신호: stdout 파일 + 활동 파일/디렉터리 중 가장 최근 수정시각 ---
+                        ${'$'}newest = 0
+                        foreach (${'$'}p in (@(${'$'}uatLog) + ${'$'}activityFiles)) {
+                            if (Test-Path ${'$'}p) { ${'$'}t = (Get-Item ${'$'}p).LastWriteTimeUtc.Ticks; if (${'$'}t -gt ${'$'}newest) { ${'$'}newest = ${'$'}t } }
                         }
-                    
-                        # --- UAT 자체 로그 파일 ---
-                        if (Test-Path ${'$'}uatInternalLogPath) {
-                            ${'$'}internalSize = (Get-Item ${'$'}uatInternalLogPath).Length
-                            if (${'$'}lastInternalSize -lt 0 -or ${'$'}internalSize -ne ${'$'}lastInternalSize) {
-                                ${'$'}lastInternalChange = Get-Date
-                                ${'$'}lastInternalSize = ${'$'}internalSize
+                        foreach (${'$'}d in ${'$'}activityDirs) {
+                            if (Test-Path ${'$'}d) {
+                                ${'$'}f = Get-ChildItem -Path ${'$'}d -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+                                if (${'$'}f) { ${'$'}t = ${'$'}f.LastWriteTimeUtc.Ticks; if (${'$'}t -gt ${'$'}newest) { ${'$'}newest = ${'$'}t } }
                             }
                         }
-                        # 파일이 아직 없으면 lastInternalChange 그대로 유지
-                        # (script 시작 시각이라 internalSilentMin이 빠르게 커짐 → Min에서 stdout이 dominant)
-                    
-                        # --- 활동 판단: stdout과 internal 중 더 최근 활동 사용 ---
-                        ${'$'}stdoutSilentMin = ((Get-Date) - ${'$'}lastStdoutChange).TotalMinutes
-                        ${'$'}internalSilentMin = ((Get-Date) - ${'$'}lastInternalChange).TotalMinutes
-                        ${'$'}silentMin = [Math]::Min(${'$'}stdoutSilentMin, ${'$'}internalSilentMin)
-                    
-                        # stdout 침묵이 5분 이상이면 watchdog 상태 한 번 출력 (heartbeat 역할 + 디버깅)
-                        if (${'$'}stdoutSilentMin -gt 5) {
-                            Write-Host ("[WATCHDOG] stdout silent {0:N1}m, UAT log silent {1:N1}m, alive (Min={2:N1}m < {3}m)" -f ${'$'}stdoutSilentMin, ${'$'}internalSilentMin, ${'$'}silentMin, ${'$'}noOutputTimeoutMin)
+                        if (${'$'}newest -gt ${'$'}lastNewestTicks) { ${'$'}lastNewestTicks = ${'$'}newest; ${'$'}lastActivity = Get-Date }
+
+                        ${'$'}silentMin = ((Get-Date) - ${'$'}lastActivity).TotalMinutes
+                        if (${'$'}silentMin -gt 10) {
+                            Write-Host ("[WATCHDOG] no activity {0:N1}m (stdout/logs unchanged, threshold {1}m)" -f ${'$'}silentMin, ${'$'}noOutputTimeoutMin)
                         }
-                    
-                        # 무출력 timeout 검사 (둘 다 침묵해야 발동)
+
+                        # 모든 활동 신호가 N분 정지 → 진짜 hang으로 판정
                         if (${'$'}silentMin -ge ${'$'}noOutputTimeoutMin) {
-                            Write-Host ("##teamcity[buildProblem description='[WATCHDOG] BuildGraph stdout AND UAT log 둘 다 {0}분간 무출력 - hang 감지로 강제 종료']" -f [int]${'$'}silentMin)
-                            # 프로세스 트리 전체 종료 (.Kill()은 RunUAT 부모만 죽여 UBT/UBA 좀비가 뮤텍스 점유 → 다음 빌드 ConflictingInstance)
-                            try { taskkill /T /F /PID ${'$'}uatProc.Id 2>${'$'}null | Out-Null } catch { Write-Host "[WATCHDOG] tree kill 실패: ${'$'}_" }
+                            Write-Host ("##teamcity[buildProblem description='WATCHDOG: no build activity for {0} min - hang detected, killing process tree']" -f [int]${'$'}silentMin)
+                            # 프로세스 트리 전체 종료 (.Kill()은 부모만 죽여 UBT/UBA 좀비가 뮤텍스 점유 → 다음 빌드 ConflictingInstance)
+                            try { taskkill /T /F /PID ${'$'}uatProc.Id 2>${'$'}null | Out-Null } catch { Write-Host "[WATCHDOG] tree kill failed" }
                             # 트리에서 분리됐을 수 있는 UBT/UBA 잔류 정리 (watchdog 발동 시 이 빌드가 유일 → 안전)
                             Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { ${'$'}_.Name -match 'UbaAgent|UbaServer' -or ${'$'}_.CommandLine -match 'UnrealBuildTool|AutomationTool' } | ForEach-Object { try { Stop-Process -Id ${'$'}_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }
                             ${'$'}killedByWatchdog = ${'$'}true
