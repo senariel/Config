@@ -134,7 +134,9 @@ object BuildEditor : BuildType({
                     Write-Host ">> RunUAT BuildGraph 시작 (watchdog: 60분 무활동 시 종료)"
                     Write-Host ">> args: ${'$'}uatArgsStr"
                     ${'$'}uatProc = Start-Process -FilePath ".\Engine\Build\BatchFiles\RunUAT.bat" -ArgumentList ${'$'}uatArgsStr -RedirectStandardOutput ${'$'}uatLog -PassThru -NoNewWindow
-                    
+                    # Start-Process -PassThru는 핸들을 미리 캐싱 안 하면 종료 후 .ExitCode가 null → 한 번 읽어 캐싱
+                    ${'$'}null = ${'$'}uatProc.Handle
+
                     # Watchdog: '무출력'이 아니라 '무활동(파일 변경 없음)'으로 hang 판정.
                     # UBA 원격 분산/쿠킹/패키징은 stdout이 수십 분 조용해도 정상(빌드 #31 오탐).
                     # stdout 임시파일 + UAT/UBA 로그(Saved/Logs) + UBT 로그의 '최신 수정시각'이
@@ -212,9 +214,12 @@ object BuildEditor : BuildType({
                     
                     if (${'$'}killedByWatchdog) { exit 124 }  # 124 = GNU timeout convention
                     
-                    if (${'$'}uatProc.ExitCode -ne 0) {
-                        Write-Host "##teamcity[buildProblem description='RunUAT failed with exit code ${'$'}(${'$'}uatProc.ExitCode)']"
-                        exit ${'$'}uatProc.ExitCode
+                    ${'$'}uatProc.WaitForExit()
+                    ${'$'}exitCode = ${'$'}uatProc.ExitCode
+                    if (${'$'}null -eq ${'$'}exitCode) { Write-Host ">> WARN: ExitCode가 null - 0으로 간주"; ${'$'}exitCode = 0 }
+                    if (${'$'}exitCode -ne 0) {
+                        Write-Host "##teamcity[buildProblem description='RunUAT failed with exit code ${'$'}exitCode']"
+                        exit ${'$'}exitCode
                     }
                 """.trimIndent()
             }
