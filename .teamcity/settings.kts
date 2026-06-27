@@ -246,6 +246,7 @@ object BuildEditor : BuildType({
                     ${'$'}rcArgs = @(${'$'}source, ${'$'}destination, '/MIR', '/Z', '/R:5', '/W:5', '/NP', '/NDL')
                     Write-Host ">> robocopy 시작 (mirror): ${'$'}source -> ${'$'}destination"
                     ${'$'}proc = Start-Process -FilePath 'robocopy.exe' -ArgumentList ${'$'}rcArgs -RedirectStandardOutput ${'$'}tmpLog -PassThru -NoNewWindow
+                    ${'$'}null = ${'$'}proc.Handle   # 종료 후 .ExitCode가 null 되는 것 방지 (핸들 캐싱)
                     
                     ${'$'}startTime = Get-Date
                     ${'$'}lastSize = 0
@@ -274,7 +275,11 @@ object BuildEditor : BuildType({
                     Get-Content ${'$'}tmpLog -Raw -ErrorAction SilentlyContinue | ForEach-Object { if (${'$'}_) { Write-Host ${'$'}_ } }
                     Remove-Item ${'$'}tmpLog -ErrorAction SilentlyContinue
                     
-                    if (${'$'}proc.ExitCode -ge 8) { Write-Error "Robocopy failed with code ${'$'}(${'$'}proc.ExitCode)" }
+                    ${'$'}proc.WaitForExit()
+                    ${'$'}rc = ${'$'}proc.ExitCode
+                    if (${'$'}null -eq ${'$'}rc) { Write-Host ">> WARN: robocopy ExitCode가 null - 0으로 간주"; ${'$'}rc = 0 }
+                    Write-Host (">> robocopy ExitCode = " + ${'$'}rc + " (0-7=성공, >=8=실패)")
+                    if (${'$'}rc -ge 8) { Write-Error "Robocopy failed with code ${'$'}rc" }
                 """.trimIndent()
             }
         }
