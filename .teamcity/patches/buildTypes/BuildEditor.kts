@@ -1,6 +1,8 @@
 package patches.buildTypes
 
 import jetbrains.buildServer.configs.kotlin.*
+import jetbrains.buildServer.configs.kotlin.buildFeatures.Perfmon
+import jetbrains.buildServer.configs.kotlin.buildFeatures.perfmon
 import jetbrains.buildServer.configs.kotlin.buildSteps.PowerShellStep
 import jetbrains.buildServer.configs.kotlin.buildSteps.powerShell
 import jetbrains.buildServer.configs.kotlin.ui.*
@@ -11,6 +13,13 @@ To apply the patch, change the buildType with id = 'BuildEditor'
 accordingly, and delete the patch script.
 */
 changeBuildType(RelativeId("BuildEditor")) {
+    params {
+        add {
+            checkbox("ArchiveBuild", "false", label = "빌드 아카이빙 (Zip)", description = "빌드 완료 후 Installed Engine을 zip 아카이브로 압축하여 배포 경로에 보관합니다.",
+                      checked = "true", unchecked = "false")
+        }
+    }
+
     expectSteps {
         powerShell {
             name = "Build UE5 Installed Engine"
@@ -394,8 +403,94 @@ changeBuildType(RelativeId("BuildEditor")) {
                         Write-Host "##teamcity[buildProblem description='RunUAT failed with exit code ${'$'}exitCode']"
                         exit ${'$'}exitCode
                     }
+                    
+                    # 중간 빌드 캐시 및 임시 파일 정리 (디스크 절약)
+                    Write-Host ">> [Cache Cleanup] 빌드 완료 후 중간 컴파일 캐시 및 임시 로그 정리"
+                    Remove-Item ".\Engine\Intermediate\Build" -Recurse -Force -ErrorAction SilentlyContinue
+                    Remove-Item ".\Engine\Programs\AutomationTool\Saved\Logs" -Recurse -Force -ErrorAction SilentlyContinue
                 """.trimIndent()
             }
+        }
+        update<PowerShellStep>(1) {
+            clearConditions()
+            scriptMode = script {
+                content = """
+                    chcp 65001
+                    
+                    ${'$'}source = "%teamcity.build.checkoutDir%\LocalBuilds\Engine\Windows"
+                    ${'$'}destination = "${'$'}env:UE5_DIST_PATH"
+                    
+                    if (!(Test-Path ${'$'}destination)) { New-Item -ItemType Directory -Force -Path ${'$'}destination }
+                    
+                    # robocopy를 background process로 실행하고 60초마다 heartbeat 출력
+                    # robocopy는 큰 파일 복사 중 진행률을 \r-only로 emit하므로 (newline 없음),
+                    # heartbeat 없이 실행하면 TeamCity가 무출력으로 오인하여 빌드 강제 종료할 수 있음.
+                    # /MIR = /E + /PURGE → destination을 source와 정확히 일치 (옛 빌드 잔해 자동 삭제)
+                    # /NP   = 진행률 % 출력 제거 (어차피 \r-only라 로그 가독성 저하만 시킴)
+                    # /NDL  = directory 목록 출력 제거 (노이즈 감소)
+                    ${'$'}tmpLog = [System.IO.Path]::GetTempFileName()
+                    ${'$'}rcArgs = @(${'$'}source, ${'$'}destination, '/MIR', '/Z', '/R:5', '/W:5', '/NP', '/NDL')
+                    Write-Host ">> robocopy 시작 (mirror): ${'$'}source -> ${'$'}destination"
+                    ${'$'}proc = Start-Process -FilePath 'robocopy.exe' -ArgumentList ${'$'}rcArgs -RedirectStandardOutput ${'$'}tmpLog -PassThru -NoNewWindow
+                    ${'$'}null = ${'$'}proc.Handle   # 종료 후 .ExitCode가 null 되는 것 방지 (핸들 캐싱)
+                    
+                    ${'$'}startTime = Get-Date
+                    ${'$'}lastSize = 0
+                    while (!${'$'}proc.HasExited) {
+                        Start-Sleep -Seconds 60
+                    
+                        # 새로 쓰여진 로그 라인을 stdout으로 흘려보냄 (file 단위 완료 줄 등)
+                        if (Test-Path ${'$'}tmpLog) {
+                            ${'$'}currentSize = (Get-Item ${'$'}tmpLog).Length
+                            if (${'$'}currentSize -gt ${'$'}lastSize) {
+                                ${'$'}fs = [System.IO.File]::Open(${'$'}tmpLog, 'Open', 'Read', 'ReadWrite')
+                                ${'$'}fs.Position = ${'$'}lastSize
+                                ${'$'}sr = New-Object System.IO.StreamReader(${'$'}fs)
+                                ${'$'}newContent = ${'$'}sr.ReadToEnd()
+                                ${'$'}sr.Close(); ${'$'}fs.Close()
+                                if (${'$'}newContent.Trim()) { Write-Host ${'$'}newContent }
+                                ${'$'}lastSize = ${'$'}currentSize
+                            }
+                        }
+                    
+                        ${'$'}elapsed = ((Get-Date) - ${'$'}startTime).TotalMinutes
+                        Write-Host ('[heartbeat] robocopy running for {0:N1} min' -f ${'$'}elapsed)
+                    }
+                    
+                    # 잔여 출력 flush
+                    Get-Content ${'$'}tmpLog -Raw -ErrorAction SilentlyContinue | ForEach-Object { if (${'$'}_) { Write-Host ${'$'}_ } }
+                    Remove-Item ${'$'}tmpLog -ErrorAction SilentlyContinue
+                    
+                    ${'$'}proc.WaitForExit()
+                    ${'$'}rc = ${'$'}proc.ExitCode
+                    if (${'$'}null -eq ${'$'}rc) { Write-Host ">> WARN: robocopy ExitCode가 null - 0으로 간주"; ${'$'}rc = 0 }
+                    Write-Host (">> robocopy ExitCode = " + ${'$'}rc + " (0-7=성공, >=8=실패)")
+                    if (${'$'}rc -ge 8) { Write-Error "Robocopy failed with code ${'$'}rc" }
+                    
+                    # 아카이빙 파라미터(ArchiveBuild) 처리
+                    ${'$'}archiveBuild = '%ArchiveBuild%'
+                    if (${'$'}archiveBuild -eq 'true') {
+                        ${'$'}zipTarget = Join-Path ${'$'}destination "UE5_InstalledEngine_%build.number%.zip"
+                        Write-Host ">> [Archive] Installed Engine 아카이빙 시작: ${'$'}source -> ${'$'}zipTarget"
+                        if (Get-Command '7z.exe' -ErrorAction SilentlyContinue) {
+                            & 7z.exe a -tzip -mx=1 "${'$'}zipTarget" "${'$'}source\*"
+                        } else {
+                            Compress-Archive -Path "${'$'}source\*" -DestinationPath "${'$'}zipTarget" -Force
+                        }
+                        Write-Host ">> [Archive] 아카이빙 완료: ${'$'}zipTarget"
+                    }
+                """.trimIndent()
+            }
+        }
+    }
+
+    features {
+        val feature1 = find<Perfmon> {
+            perfmon {
+            }
+        }
+        feature1.apply {
+            param("teamcity.perfmon.feature.enabled", "true")
         }
     }
 }

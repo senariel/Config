@@ -1,6 +1,8 @@
 package patches.buildTypes
 
 import jetbrains.buildServer.configs.kotlin.*
+import jetbrains.buildServer.configs.kotlin.buildFeatures.Perfmon
+import jetbrains.buildServer.configs.kotlin.buildFeatures.perfmon
 import jetbrains.buildServer.configs.kotlin.buildSteps.ScriptBuildStep
 import jetbrains.buildServer.configs.kotlin.buildSteps.powerShell
 import jetbrains.buildServer.configs.kotlin.buildSteps.script
@@ -56,6 +58,16 @@ changeBuildType(RelativeId("FetchSource")) {
         update<ScriptBuildStep>(1) {
             clearConditions()
             scriptContent = """.\Engine\Binaries\DotNET\GitDependencies\win-x64\GitDependencies.exe"""
+        }
+    }
+
+    features {
+        val feature1 = find<Perfmon> {
+            perfmon {
+            }
+        }
+        feature1.apply {
+            param("teamcity.perfmon.feature.enabled", "true")
         }
     }
 }
