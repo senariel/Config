@@ -279,21 +279,20 @@ changeBuildType(RelativeId("BuildEditor")) {
                             if (${'$'}linkNode) { [void]${'$'}linkNode.ParentNode.RemoveChild(${'$'}linkNode) }
                         }
                     
-                        # Horde / UBA 타임아웃 완화 (원격 워커 LLM 작업 및 대기 시 끊김 방지: MaxIdle 60s)
+                        # Horde 타임아웃 완화 (원격 워커 LLM 작업 및 대기 시 끊김 방지: MaxIdle 60초)
                         ${'$'}horde = ${'$'}doc.SelectSingleNode('/u:Configuration/u:Horde', ${'$'}nsm)
                         if (${'$'}horde) {
                             ${'$'}idleNode = ${'$'}horde.SelectSingleNode('u:MaxIdle', ${'$'}nsm)
                             if (-not ${'$'}idleNode) { ${'$'}idleNode = ${'$'}doc.CreateElement('MaxIdle', ${'$'}nsUri); [void]${'$'}horde.AppendChild(${'$'}idleNode) }
-                            ${'$'}idleNode.InnerText = '60s'
+                            ${'$'}idleNode.InnerText = '60'
                         }
-                        ${'$'}uba = ${'$'}doc.SelectSingleNode('/u:Configuration/u:UBAAccelerator', ${'$'}nsm)
-                        if (-not ${'$'}uba) { ${'$'}uba = ${'$'}doc.CreateElement('UBAAccelerator', ${'$'}nsUri); [void]${'$'}doc.DocumentElement.AppendChild(${'$'}uba) }
-                        ${'$'}timeoutNode = ${'$'}uba.SelectSingleNode('u:ConnectionTimeoutSeconds', ${'$'}nsm)
-                        if (-not ${'$'}timeoutNode) { ${'$'}timeoutNode = ${'$'}doc.CreateElement('ConnectionTimeoutSeconds', ${'$'}nsUri); [void]${'$'}uba.AppendChild(${'$'}timeoutNode) }
-                        ${'$'}timeoutNode.InnerText = '60'
+                    
+                        # 잘못된 노드가 있으면 정리
+                        ${'$'}invalidUba = ${'$'}doc.SelectSingleNode('/u:Configuration/u:UBAAccelerator', ${'$'}nsm)
+                        if (${'$'}invalidUba) { [void]${'$'}invalidUba.ParentNode.RemoveChild(${'$'}invalidUba) }
                     
                         ${'$'}doc.Save(${'$'}bcFile)
-                        Write-Host ">> BuildConfiguration.xml 갱신 완료: MaxParallelActions=${'$'}mpa, MaxLinkActions=1, Horde.MaxIdle=60s, UBA.ConnectionTimeout=60s"
+                        Write-Host ">> BuildConfiguration.xml 갱신 완료: MaxParallelActions=${'$'}mpa, MaxLinkActions=1, Horde.MaxIdle=60"
                     } else {
                         Write-Host ">> BuildConfiguration.xml not found on agent - skipping config merge"
                     }
