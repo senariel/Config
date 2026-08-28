@@ -251,7 +251,7 @@ changeBuildType(RelativeId("BuildEditor")) {
                     chcp 65001 | Out-Null
                     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
                     
-                    # MaxParallelActions를 머신 BuildConfiguration.xml에 안전 머지 (Horde 등 기존 설정 보존, 엔진 소스/repo 무관).
+                    # MaxParallelActions, MaxLinkActions, Horde MaxIdle, UBA Timeout을 머신 BuildConfiguration.xml에 안전 머지.
                     # XML 파싱으로 해당 노드만 갱신/제거 → 다른 설정 안 건드림.
                     ${'$'}mpa = '%MaxParallelActions%'
                     ${'$'}bcFile = Join-Path ${'$'}env:ProgramData 'Unreal Engine\UnrealBuildTool\BuildConfiguration.xml'
@@ -263,6 +263,9 @@ changeBuildType(RelativeId("BuildEditor")) {
                         ${'$'}bc = ${'$'}doc.SelectSingleNode('/u:Configuration/u:BuildConfiguration', ${'$'}nsm)
                         ${'$'}node = if (${'$'}bc) { ${'$'}bc.SelectSingleNode('u:MaxParallelActions', ${'$'}nsm) } else { ${'$'}null }
                         ${'$'}linkNode = if (${'$'}bc) { ${'$'}bc.SelectSingleNode('u:MaxLinkActions', ${'$'}nsm) } else { ${'$'}null }
+                        ${'$'}deprecNode = if (${'$'}bc) { ${'$'}bc.SelectSingleNode('u:bAllowUBALocalExecutor', ${'$'}nsm) } else { ${'$'}null }
+                        if (${'$'}deprecNode) { [void]${'$'}deprecNode.ParentNode.RemoveChild(${'$'}deprecNode) }
+                    
                         if (${'$'}mpa -and ${'$'}mpa.Trim() -and ${'$'}mpa.Trim() -ne '0') {
                             if (-not ${'$'}bc) { ${'$'}bc = ${'$'}doc.CreateElement('BuildConfiguration', ${'$'}nsUri); [void]${'$'}doc.DocumentElement.AppendChild(${'$'}bc) }
                             if (-not ${'$'}node) { ${'$'}node = ${'$'}doc.CreateElement('MaxParallelActions', ${'$'}nsUri); [void]${'$'}bc.AppendChild(${'$'}node) }
@@ -271,19 +274,28 @@ changeBuildType(RelativeId("BuildEditor")) {
                             # OOM 방지를 위해 링크 작업 개수를 1개로 제한
                             if (-not ${'$'}linkNode) { ${'$'}linkNode = ${'$'}doc.CreateElement('MaxLinkActions', ${'$'}nsUri); [void]${'$'}bc.AppendChild(${'$'}linkNode) }
                             ${'$'}linkNode.InnerText = '1'
-                            
-                            ${'$'}doc.Save(${'$'}bcFile)
-                            Write-Host (">> MaxParallelActions=" + ${'$'}mpa.Trim() + ", MaxLinkActions=1 merged into BuildConfiguration.xml (Horde preserved)")
                         } elseif (${'$'}node) {
                             [void]${'$'}node.ParentNode.RemoveChild(${'$'}node)
                             if (${'$'}linkNode) { [void]${'$'}linkNode.ParentNode.RemoveChild(${'$'}linkNode) }
-                            ${'$'}doc.Save(${'$'}bcFile)
-                            Write-Host ">> MaxParallelActions and MaxLinkActions cleared - engine default parallelism"
-                        } else {
-                            Write-Host ">> MaxParallelActions not set - engine default parallelism"
                         }
+                    
+                        # Horde / UBA 타임아웃 완화 (원격 워커 LLM 작업 및 대기 시 끊김 방지: MaxIdle 60s)
+                        ${'$'}horde = ${'$'}doc.SelectSingleNode('/u:Configuration/u:Horde', ${'$'}nsm)
+                        if (${'$'}horde) {
+                            ${'$'}idleNode = ${'$'}horde.SelectSingleNode('u:MaxIdle', ${'$'}nsm)
+                            if (-not ${'$'}idleNode) { ${'$'}idleNode = ${'$'}doc.CreateElement('MaxIdle', ${'$'}nsUri); [void]${'$'}horde.AppendChild(${'$'}idleNode) }
+                            ${'$'}idleNode.InnerText = '60s'
+                        }
+                        ${'$'}uba = ${'$'}doc.SelectSingleNode('/u:Configuration/u:UBAAccelerator', ${'$'}nsm)
+                        if (-not ${'$'}uba) { ${'$'}uba = ${'$'}doc.CreateElement('UBAAccelerator', ${'$'}nsUri); [void]${'$'}doc.DocumentElement.AppendChild(${'$'}uba) }
+                        ${'$'}timeoutNode = ${'$'}uba.SelectSingleNode('u:ConnectionTimeoutSeconds', ${'$'}nsm)
+                        if (-not ${'$'}timeoutNode) { ${'$'}timeoutNode = ${'$'}doc.CreateElement('ConnectionTimeoutSeconds', ${'$'}nsUri); [void]${'$'}uba.AppendChild(${'$'}timeoutNode) }
+                        ${'$'}timeoutNode.InnerText = '60'
+                    
+                        ${'$'}doc.Save(${'$'}bcFile)
+                        Write-Host ">> BuildConfiguration.xml 갱신 완료: MaxParallelActions=${'$'}mpa, MaxLinkActions=1, Horde.MaxIdle=60s, UBA.ConnectionTimeout=60s"
                     } else {
-                        Write-Host ">> BuildConfiguration.xml not found on agent - skipping MaxParallelActions"
+                        Write-Host ">> BuildConfiguration.xml not found on agent - skipping config merge"
                     }
                     
                     if ('%CleanMode%' -eq 'FullRebuild') {
