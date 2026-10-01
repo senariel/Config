@@ -64,6 +64,10 @@ object BuildEditor : BuildType({
 
     params {
         param("env.UE5_DIST_PATH", """D:\Shared\UE5""")
+        // ArchiveBuild zip 보관 폴더. 배포 폴더(UE5_DIST_PATH) 밖이어야 함 — 안에 두면 다음 빌드의 robocopy /MIR이 지움.
+        param("env.UE5_ARCHIVE_PATH", """D:\Shared\UE5_Archives""")
+        // 보관할 zip 개수 (최근 N개만 유지, 0 = 무제한)
+        param("ArchiveKeepCount", "3")
         // 동시 실행 액션 수 상한 (OOM 완화). 빈값/0 = 엔진 기본. 스텝이 에이전트 BuildConfiguration.xml에 머지.
         param("MaxParallelActions", "10")
         // Android 타깃 플랫폼 포함 여부 (Win64는 항상 포함). 에이전트에 Machine 범위 ANDROID_HOME/NDKROOT 필요.
@@ -338,16 +342,43 @@ object BuildEditor : BuildType({
                     if (${'$'}rc -ge 8) { Write-Error "Robocopy failed with code ${'$'}rc" }
                     
                     # 아카이빙 파라미터(ArchiveBuild) 처리
+                    # zip은 배포 폴더 밖(UE5_ARCHIVE_PATH)에 저장 — 배포 폴더 안에 두면 다음 빌드의 robocopy /MIR이 지움.
                     ${'$'}archiveBuild = '%ArchiveBuild%'
                     if (${'$'}archiveBuild -eq 'true') {
-                        ${'$'}zipTarget = Join-Path ${'$'}destination "UE5_InstalledEngine_%build.number%.zip"
-                        Write-Host ">> [Archive] Installed Engine 아카이빙 시작: ${'$'}source -> ${'$'}zipTarget"
-                        if (Get-Command '7z.exe' -ErrorAction SilentlyContinue) {
-                            & 7z.exe a -tzip -mx=1 "${'$'}zipTarget" "${'$'}source\*"
+                        ${'$'}archiveDir = "${'$'}env:UE5_ARCHIVE_PATH"
+                        ${'$'}distFull = [System.IO.Path]::GetFullPath(${'$'}destination).TrimEnd('\') + '\'
+                        ${'$'}archFull = [System.IO.Path]::GetFullPath(${'$'}archiveDir).TrimEnd('\') + '\'
+                        if (${'$'}archFull.StartsWith(${'$'}distFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+                            Write-Host "##teamcity[buildProblem description='UE5_ARCHIVE_PATH is inside UE5_DIST_PATH - robocopy /MIR would delete archives. Archive skipped.']"
                         } else {
-                            Compress-Archive -Path "${'$'}source\*" -DestinationPath "${'$'}zipTarget" -Force
+                            if (!(Test-Path ${'$'}archiveDir)) { New-Item -ItemType Directory -Force -Path ${'$'}archiveDir | Out-Null }
+                            ${'$'}zipTarget = Join-Path ${'$'}archiveDir "UE5_InstalledEngine_%build.number%.zip"
+                            Write-Host ">> [Archive] Installed Engine 아카이빙 시작: ${'$'}source -> ${'$'}zipTarget"
+                            # 7-Zip 우선 (서비스 계정 PATH에 없을 수 있어 기본 설치 경로도 확인). Compress-Archive는 PS 5.1에서 2GB 초과 파일 불가.
+                            ${'$'}sevenZip = (Get-Command '7z.exe' -ErrorAction SilentlyContinue).Source
+                            if (-not ${'$'}sevenZip -and (Test-Path "${'$'}env:ProgramFiles\7-Zip\7z.exe")) { ${'$'}sevenZip = "${'$'}env:ProgramFiles\7-Zip\7z.exe" }
+                            ${'$'}archiveOk = ${'$'}false
+                            if (${'$'}sevenZip) {
+                                & ${'$'}sevenZip a -tzip -mx=1 "${'$'}zipTarget" "${'$'}source\*"
+                                ${'$'}archiveOk = (${'$'}LASTEXITCODE -le 1)   # 7z: 0=OK, 1=경고(일부 파일 잠김 등)
+                            } else {
+                                try { Compress-Archive -Path "${'$'}source\*" -DestinationPath "${'$'}zipTarget" -Force -ErrorAction Stop; ${'$'}archiveOk = ${'$'}true }
+                                catch { Write-Host ">> [Archive] Compress-Archive 실패: ${'$'}_" }
+                            }
+                            if (${'$'}archiveOk) {
+                                Write-Host ">> [Archive] 아카이빙 완료: ${'$'}zipTarget"
+                                # 보관 개수 제한: 새 zip이 성공했을 때만 오래된 것 삭제 (실패 시 기존 zip 보존)
+                                ${'$'}keep = [int]'%ArchiveKeepCount%'
+                                if (${'$'}keep -gt 0) {
+                                    Get-ChildItem ${'$'}archiveDir -Filter 'UE5_InstalledEngine_*.zip' | Sort-Object LastWriteTime -Descending | Select-Object -Skip ${'$'}keep | ForEach-Object {
+                                        Write-Host (">> [Archive] 오래된 아카이브 삭제: " + ${'$'}_.Name)
+                                        Remove-Item ${'$'}_.FullName -Force
+                                    }
+                                }
+                            } else {
+                                Write-Host "##teamcity[buildProblem description='Archive (zip) failed - previous archives kept.']"
+                            }
                         }
-                        Write-Host ">> [Archive] 아카이빙 완료: ${'$'}zipTarget"
                     }
                 """.trimIndent()
             }

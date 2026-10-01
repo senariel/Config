@@ -88,6 +88,8 @@ Build Editor의 **`WithAndroid` 체크박스(기본 on)** 로 Win64에 더해 An
 - **아키텍처**: `AndroidArchitectures`가 Option이 아니라 Property(`arm64+x64`)라 `-set`으로 못 바꿈 → arm64·x64(에뮬레이터) 둘 다 컴파일. 빌드 시간/메모리 증가.
 - **요구 SDK (UE 5.8.3, `Engine/Config/Android/Android_SDK.json`)**: NDK r27c(`27.2.12479018`, 허용 r27c~r29), platform `android-36`, build-tools `36.0.0`, cmake `3.22.1`.
 - **사전 점검**: 스텝 시작 시 `WithAndroid=true`인데 `ANDROID_HOME`/`NDKROOT`가 없거나 경로가 없으면 **즉시 실패**(buildProblem). 1h+ 컴파일 뒤에 실패하지 않게.
+- **Horde/UBA 워커엔 SDK 불필요**: Android **컴파일**은 UBA 원격 실행 대상이지만, 워커는 clang·헤더·소스를 이니시에이터(Agent_Win64)의 UBA 스토리지 서버에서 받아 실행(파일 가상화)하므로 NDK 설치가 필요 없음. Android **링크**는 `AndroidToolChain`이 `bCanExecuteRemotely = false`라 항상 Agent_Win64에서 로컬 실행. 단 원격 워커는 Windows여야 함(Windows용 clang.exe 실행 — Linux Horde 서버는 못 받음). 첫 Android 빌드 때 NDK 파일이 워커로 전송돼 네트워크가 잠깐 몰림.
+- **설치된 엔진을 받아 쓰는 PC**: 그 엔진으로 게임을 Android로 **패키징**하려면 그 PC에 Android Studio/SDK/JDK가 따로 필요(빌드 팜과 별개).
 - **JAVA_HOME**: 엔진 빌드(라이브러리 컴파일)엔 불필요. 게임을 APK로 패키징할 때 필요 — 그땐 JDK 22 말고 Android Studio의 `jbr` 권장.
 
 ### 에이전트 준비 (Agent_Win64, 1회)
@@ -118,6 +120,8 @@ Build Editor의 **`WithAndroid` 체크박스(기본 on)** 로 Win64에 더해 An
 `/MIR` = `/E` + `/PURGE` — destination을 source와 정확히 일치시킴. 새 빌드에 없는 옛 파일은 자동 삭제.
 
 이게 없으면 옛 빌드의 잔해(예: 9개월 전 SkeletalMeshModifiers.dll)가 distribution 경로에 누적되어 모듈 로드 크래시 유발.
+
+**`/MIR` 주의 — 배포 폴더엔 원본에 없는 파일을 두면 안 됨.** 다음 빌드가 지움. 그래서 `ArchiveBuild` zip은 **`UE5_ARCHIVE_PATH`(기본 `D:\Shared\UE5_Archives`, 배포 폴더 밖)** 에 저장하고 `ArchiveKeepCount`(기본 3)개만 유지. 아카이브 경로가 배포 폴더 안이면 스텝이 거부함. zip이 실패하면 오래된 zip을 지우지 않음. 7-Zip이 있으면 사용(서비스 PATH에 없어도 `C:\Program Files\7-Zip\7z.exe` 확인), 없으면 `Compress-Archive` — PS 5.1에선 2GB 넘는 파일을 못 넣으므로 **에이전트에 7-Zip 설치 권장**. (초기 UI 버전은 zip을 배포 폴더 안에 만들어 다음 빌드 때 사라졌음.)
 
 ## Failure Conditions
 
@@ -362,6 +366,7 @@ CLAUDE.md               ← 이 파일
 - 2026-06 (6차): Start-Process 핸들 캐싱(`$null = $proc.Handle`) — `.ExitCode`가 null로 잡혀 **빌드 성공(ExitCode=0)인데 실패 처리**되던 문제 수정(함정 #16). **빌드 #35에서 엔진 빌드 자체는 첫 완주 성공(1h50m).**
 - 2026-07~09 (UI에서 변경 → `.teamcity/patches/`로 저장돼 있던 것, 2026-10에 settings.kts로 병합 후 patches 삭제): Build Editor에 `ArchiveBuild`(zip 보관) 체크박스, BuildConfiguration.xml 머지에 `MaxLinkActions=1`(링크 동시 1개로 OOM 완화)·Horde `MaxIdle=60`·deprecated `bAllowUBALocalExecutor`/잘못된 `UBAAccelerator` 노드 제거, **빌드 성공 후 `Engine\Intermediate\Build`·UAT 로그 삭제**(디스크 절약 — 대신 다음 빌드의 증분 캐시가 사라짐), Fetch Source의 GitDependencies `--force` 제거, perfmon 활성화, 프로젝트 정리 규칙(10일 보관).
 - 2026-10: **Android 타깃 추가** — `WithAndroid` 체크박스(기본 on) + `-set:WithAndroid` + SDK 사전 점검(fail-fast). Build Editor/Fetch Source를 `Agent_Win64`에 이름 고정(새 에이전트 MAGI_Main 배정 방지). 함정 #17(SetupAndroid.bat의 User 범위 env).
+- 2026-10 (2차): `ArchiveBuild` zip을 배포 폴더 밖 `UE5_ARCHIVE_PATH`로 이동 + `ArchiveKeepCount` 보관 개수 제한 + 실패 시 기존 zip 보존. (배포 폴더 안에 만들면 다음 빌드의 robocopy /MIR이 지우던 문제.)
 
 ## 다음에 할 만한 것 (TODO 후보)
 
