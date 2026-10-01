@@ -133,9 +133,14 @@ object BuildEditor : BuildType({
                             ${'$'}idleNode.InnerText = '60'
                         }
                     
-                        # 잘못된 노드가 있으면 정리
-                        ${'$'}invalidUba = ${'$'}doc.SelectSingleNode('/u:Configuration/u:UBAAccelerator', ${'$'}nsm)
-                        if (${'$'}invalidUba) { [void]${'$'}invalidUba.ParentNode.RemoveChild(${'$'}invalidUba) }
+                        # 잘못된 노드가 있으면 정리 (UBT가 모르는 이름이라 경고만 내고 무시되는 항목들 — 과거 수동 편집 잔재)
+                        foreach (${'$'}badName in @('UBAAccelerator', 'LocalExecutorSettings')) {
+                            ${'$'}badNode = ${'$'}doc.SelectSingleNode("/u:Configuration/u:${'$'}badName", ${'$'}nsm)
+                            if (${'$'}badNode) {
+                                [void]${'$'}badNode.ParentNode.RemoveChild(${'$'}badNode)
+                                Write-Host ">> BuildConfiguration.xml: invalid node removed: ${'$'}badName"
+                            }
+                        }
                     
                         ${'$'}doc.Save(${'$'}bcFile)
                         Write-Host ">> BuildConfiguration.xml 갱신 완료: MaxParallelActions=${'$'}mpa, MaxLinkActions=1, Horde.MaxIdle=60"
