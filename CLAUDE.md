@@ -276,6 +276,8 @@ UI에서 변경 시 `.teamcity/patches/...` 파일이 자동 생성됨. 누적�
 
 → **One-way 모드 채택**으로 근본 해결. 변경은 kts 직접 수정으로만.
 
+**재발 사례 (2026-10)**: UI에서 바꾼 설정이 `patches/`로 쌓여 있는 상태에서 settings.kts의 Build Editor 스텝을 고치자, patch의 `expectSteps`(옛 스텝 내용 기대)가 안 맞아 **DSL 적용 실패**(`UI changes error`, `patches/buildTypes/BuildEditor.kts`). one-way라 기존 설정은 유지됨. 해결: patch의 `update`/`add` 내용을 settings.kts에 그대로 반영 → `patches/` 삭제 → push. **UI 편집을 계속 쓰면 다시 쌓이므로**, 바꾼 뒤엔 바로 kts로 옮길 것.
+
 ### 9. Horde 모듈 빌드 산출물이 git untracked로 남음
 `Engine/Source/Programs/Horde/.../bin/...` 등이 `.gitignore`에 안 잡혀 누적. CleanSource가 정리하긴 하지만 엔진 repo `.gitignore` 추가가 이상적.
 
@@ -358,6 +360,7 @@ CLAUDE.md               ← 이 파일
 - 2026-06 (4차): `MaxParallelActions` 파라미터 추가 — Build Editor 스텝이 에이전트 BuildConfiguration.xml에 XML 머지로 주입(Horde 보존, 엔진 소스 무관). Link 메모리 OOM→UBA 크래시 완화(함정 #14). *(주: UBA executor는 이 설정 무시 — 효과 없음 확인. 진짜 원인은 공유 워커 머신 메모리.)*
 - 2026-06 (5차): watchdog에 **프로세스 트리 I/O 신호** 추가 — Make Installed Build의 LocalBuilds 대용량 복사 단계가 무활동으로 오판되던 문제(함정 #15).
 - 2026-06 (6차): Start-Process 핸들 캐싱(`$null = $proc.Handle`) — `.ExitCode`가 null로 잡혀 **빌드 성공(ExitCode=0)인데 실패 처리**되던 문제 수정(함정 #16). **빌드 #35에서 엔진 빌드 자체는 첫 완주 성공(1h50m).**
+- 2026-07~09 (UI에서 변경 → `.teamcity/patches/`로 저장돼 있던 것, 2026-10에 settings.kts로 병합 후 patches 삭제): Build Editor에 `ArchiveBuild`(zip 보관) 체크박스, BuildConfiguration.xml 머지에 `MaxLinkActions=1`(링크 동시 1개로 OOM 완화)·Horde `MaxIdle=60`·deprecated `bAllowUBALocalExecutor`/잘못된 `UBAAccelerator` 노드 제거, **빌드 성공 후 `Engine\Intermediate\Build`·UAT 로그 삭제**(디스크 절약 — 대신 다음 빌드의 증분 캐시가 사라짐), Fetch Source의 GitDependencies `--force` 제거, perfmon 활성화, 프로젝트 정리 규칙(10일 보관).
 - 2026-10: **Android 타깃 추가** — `WithAndroid` 체크박스(기본 on) + `-set:WithAndroid` + SDK 사전 점검(fail-fast). Build Editor/Fetch Source를 `Agent_Win64`에 이름 고정(새 에이전트 MAGI_Main 배정 방지). 함정 #17(SetupAndroid.bat의 User 범위 env).
 
 ## 다음에 할 만한 것 (TODO 후보)

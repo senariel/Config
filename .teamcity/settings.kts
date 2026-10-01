@@ -46,6 +46,17 @@ project {
                 options = listOf("빠른 빌드 (클린 없음)" to "Incremental", "소스 정리 (고아 파일 제거)" to "CleanSource", "전체 재빌드 (Binaries/Intermediate 초기화)" to "FullRebuild"))
     }
     buildTypesOrder = arrayListOf(SyncFork, FetchSource, BuildEditor)
+
+    features {
+        // 빌드 기록 정리: 10일 보관 (UI에서 추가했던 것을 patch에서 병합)
+        feature {
+            type = "cleanUp"
+            id = "PROJECT_CLEANUP_RULE"
+            param("keepRule.1.dataToKeep", "everything")
+            param("keepRule.1.type", "days")
+            param("keepRule.1.days", "10")
+        }
+    }
 }
 
 object BuildEditor : BuildType({
@@ -59,6 +70,8 @@ object BuildEditor : BuildType({
         checkbox("WithAndroid", "true", label = "Android 포함",
             description = "Win64에 더해 Android 타깃(arm64+x64)도 빌드. 에이전트에 Android SDK/NDK 필요.",
             display = ParameterDisplay.NORMAL, checked = "true", unchecked = "false")
+        checkbox("ArchiveBuild", "false", label = "빌드 아카이빙 (Zip)", description = "빌드 완료 후 Installed Engine을 zip 아카이브로 압축하여 배포 경로에 보관합니다.",
+            checked = "true", unchecked = "false")
     }
 
     vcs {
@@ -79,8 +92,8 @@ object BuildEditor : BuildType({
                     # UTF-8 codepage (cmd의 chcp 65001 대응)
                     chcp 65001 | Out-Null
                     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-
-                    # MaxParallelActions를 머신 BuildConfiguration.xml에 안전 머지 (Horde 등 기존 설정 보존, 엔진 소스/repo 무관).
+                    
+                    # MaxParallelActions, MaxLinkActions, Horde MaxIdle, UBA Timeout을 머신 BuildConfiguration.xml에 안전 머지.
                     # XML 파싱으로 해당 노드만 갱신/제거 → 다른 설정 안 건드림.
                     ${'$'}mpa = '%MaxParallelActions%'
                     ${'$'}bcFile = Join-Path ${'$'}env:ProgramData 'Unreal Engine\UnrealBuildTool\BuildConfiguration.xml'
@@ -91,21 +104,39 @@ object BuildEditor : BuildType({
                         ${'$'}nsm.AddNamespace('u', ${'$'}nsUri)
                         ${'$'}bc = ${'$'}doc.SelectSingleNode('/u:Configuration/u:BuildConfiguration', ${'$'}nsm)
                         ${'$'}node = if (${'$'}bc) { ${'$'}bc.SelectSingleNode('u:MaxParallelActions', ${'$'}nsm) } else { ${'$'}null }
+                        ${'$'}linkNode = if (${'$'}bc) { ${'$'}bc.SelectSingleNode('u:MaxLinkActions', ${'$'}nsm) } else { ${'$'}null }
+                        ${'$'}deprecNode = if (${'$'}bc) { ${'$'}bc.SelectSingleNode('u:bAllowUBALocalExecutor', ${'$'}nsm) } else { ${'$'}null }
+                        if (${'$'}deprecNode) { [void]${'$'}deprecNode.ParentNode.RemoveChild(${'$'}deprecNode) }
+                    
                         if (${'$'}mpa -and ${'$'}mpa.Trim() -and ${'$'}mpa.Trim() -ne '0') {
                             if (-not ${'$'}bc) { ${'$'}bc = ${'$'}doc.CreateElement('BuildConfiguration', ${'$'}nsUri); [void]${'$'}doc.DocumentElement.AppendChild(${'$'}bc) }
                             if (-not ${'$'}node) { ${'$'}node = ${'$'}doc.CreateElement('MaxParallelActions', ${'$'}nsUri); [void]${'$'}bc.AppendChild(${'$'}node) }
                             ${'$'}node.InnerText = ${'$'}mpa.Trim()
-                            ${'$'}doc.Save(${'$'}bcFile)
-                            Write-Host (">> MaxParallelActions=" + ${'$'}mpa.Trim() + " merged into BuildConfiguration.xml (Horde preserved)")
+                            
+                            # OOM 방지를 위해 링크 작업 개수를 1개로 제한
+                            if (-not ${'$'}linkNode) { ${'$'}linkNode = ${'$'}doc.CreateElement('MaxLinkActions', ${'$'}nsUri); [void]${'$'}bc.AppendChild(${'$'}linkNode) }
+                            ${'$'}linkNode.InnerText = '1'
                         } elseif (${'$'}node) {
                             [void]${'$'}node.ParentNode.RemoveChild(${'$'}node)
-                            ${'$'}doc.Save(${'$'}bcFile)
-                            Write-Host ">> MaxParallelActions cleared - engine default parallelism"
-                        } else {
-                            Write-Host ">> MaxParallelActions not set - engine default parallelism"
+                            if (${'$'}linkNode) { [void]${'$'}linkNode.ParentNode.RemoveChild(${'$'}linkNode) }
                         }
+                    
+                        # Horde 타임아웃 완화 (원격 워커 LLM 작업 및 대기 시 끊김 방지: MaxIdle 60초)
+                        ${'$'}horde = ${'$'}doc.SelectSingleNode('/u:Configuration/u:Horde', ${'$'}nsm)
+                        if (${'$'}horde) {
+                            ${'$'}idleNode = ${'$'}horde.SelectSingleNode('u:MaxIdle', ${'$'}nsm)
+                            if (-not ${'$'}idleNode) { ${'$'}idleNode = ${'$'}doc.CreateElement('MaxIdle', ${'$'}nsUri); [void]${'$'}horde.AppendChild(${'$'}idleNode) }
+                            ${'$'}idleNode.InnerText = '60'
+                        }
+                    
+                        # 잘못된 노드가 있으면 정리
+                        ${'$'}invalidUba = ${'$'}doc.SelectSingleNode('/u:Configuration/u:UBAAccelerator', ${'$'}nsm)
+                        if (${'$'}invalidUba) { [void]${'$'}invalidUba.ParentNode.RemoveChild(${'$'}invalidUba) }
+                    
+                        ${'$'}doc.Save(${'$'}bcFile)
+                        Write-Host ">> BuildConfiguration.xml 갱신 완료: MaxParallelActions=${'$'}mpa, MaxLinkActions=1, Horde.MaxIdle=60"
                     } else {
-                        Write-Host ">> BuildConfiguration.xml not found on agent - skipping MaxParallelActions"
+                        Write-Host ">> BuildConfiguration.xml not found on agent - skipping config merge"
                     }
 
                     # Android SDK 사전 점검 (WithAndroid=true). 미설치면 즉시 실패 → 1h+ 컴파일 뒤 실패 방지.
@@ -122,7 +153,7 @@ object BuildEditor : BuildType({
                         }
                         Write-Host (">> Android SDK OK: ANDROID_HOME=" + ${'$'}sdk + " NDKROOT=" + ${'$'}ndk)
                     }
-
+                    
                     if ('%CleanMode%' -eq 'FullRebuild') {
                         Write-Host ">> CleanMode = FullRebuild → UAT -clean 적용 (아래 args에 추가됨)"
                     }
@@ -156,7 +187,7 @@ object BuildEditor : BuildType({
                     ${'$'}uatProc = Start-Process -FilePath ".\Engine\Build\BatchFiles\RunUAT.bat" -ArgumentList ${'$'}uatArgsStr -RedirectStandardOutput ${'$'}uatLog -PassThru -NoNewWindow
                     # Start-Process -PassThru는 핸들을 미리 캐싱 안 하면 종료 후 .ExitCode가 null → 한 번 읽어 캐싱
                     ${'$'}null = ${'$'}uatProc.Handle
-
+                    
                     # Watchdog: '무출력'이 아니라 '무활동(파일 변경 없음)'으로 hang 판정.
                     # UBA 원격 분산/쿠킹/패키징은 stdout이 수십 분 조용해도 정상(빌드 #31 오탐).
                     # stdout 임시파일 + UAT/UBA 로그(Saved/Logs) + UBT 로그의 '최신 수정시각'이
@@ -196,7 +227,7 @@ object BuildEditor : BuildType({
                             }
                         }
                         if (${'$'}newest -gt ${'$'}lastNewestTicks) { ${'$'}lastNewestTicks = ${'$'}newest; ${'$'}lastActivity = Get-Date }
-
+                    
                         # --- 추가 신호: 빌드 프로세스 트리의 누적 I/O 바이트 ---
                         # 파일 mtime이 못 잡는 단계(예: Make Installed Build의 LocalBuilds 대용량 복사) 커버.
                         # RunUAT 자손 트리의 ReadTransferCount+WriteTransferCount 합이 늘면 alive.
@@ -210,12 +241,12 @@ object BuildEditor : BuildType({
                             foreach (${'$'}pr in ${'$'}allProc) { if (${'$'}tree[[int]${'$'}pr.ProcessId]) { ${'$'}ioTotal += [int64]${'$'}pr.ReadTransferCount + [int64]${'$'}pr.WriteTransferCount } }
                         } catch {}
                         if (${'$'}ioTotal -gt ${'$'}lastIoTotal) { ${'$'}lastIoTotal = ${'$'}ioTotal; ${'$'}lastActivity = Get-Date }
-
+                    
                         ${'$'}silentMin = ((Get-Date) - ${'$'}lastActivity).TotalMinutes
                         if (${'$'}silentMin -gt 10) {
                             Write-Host ("[WATCHDOG] no activity {0:N1}m (stdout/logs unchanged, threshold {1}m)" -f ${'$'}silentMin, ${'$'}noOutputTimeoutMin)
                         }
-
+                    
                         # 모든 활동 신호가 N분 정지 → 진짜 hang으로 판정
                         if (${'$'}silentMin -ge ${'$'}noOutputTimeoutMin) {
                             Write-Host ("##teamcity[buildProblem description='WATCHDOG: no build activity for {0} min - hang detected, killing process tree']" -f [int]${'$'}silentMin)
@@ -241,6 +272,11 @@ object BuildEditor : BuildType({
                         Write-Host "##teamcity[buildProblem description='RunUAT failed with exit code ${'$'}exitCode']"
                         exit ${'$'}exitCode
                     }
+                    
+                    # 중간 빌드 캐시 및 임시 파일 정리 (디스크 절약)
+                    Write-Host ">> [Cache Cleanup] 빌드 완료 후 중간 컴파일 캐시 및 임시 로그 정리"
+                    Remove-Item ".\Engine\Intermediate\Build" -Recurse -Force -ErrorAction SilentlyContinue
+                    Remove-Item ".\Engine\Programs\AutomationTool\Saved\Logs" -Recurse -Force -ErrorAction SilentlyContinue
                 """.trimIndent()
             }
         }
@@ -300,6 +336,19 @@ object BuildEditor : BuildType({
                     if (${'$'}null -eq ${'$'}rc) { Write-Host ">> WARN: robocopy ExitCode가 null - 0으로 간주"; ${'$'}rc = 0 }
                     Write-Host (">> robocopy ExitCode = " + ${'$'}rc + " (0-7=성공, >=8=실패)")
                     if (${'$'}rc -ge 8) { Write-Error "Robocopy failed with code ${'$'}rc" }
+                    
+                    # 아카이빙 파라미터(ArchiveBuild) 처리
+                    ${'$'}archiveBuild = '%ArchiveBuild%'
+                    if (${'$'}archiveBuild -eq 'true') {
+                        ${'$'}zipTarget = Join-Path ${'$'}destination "UE5_InstalledEngine_%build.number%.zip"
+                        Write-Host ">> [Archive] Installed Engine 아카이빙 시작: ${'$'}source -> ${'$'}zipTarget"
+                        if (Get-Command '7z.exe' -ErrorAction SilentlyContinue) {
+                            & 7z.exe a -tzip -mx=1 "${'$'}zipTarget" "${'$'}source\*"
+                        } else {
+                            Compress-Archive -Path "${'$'}source\*" -DestinationPath "${'$'}zipTarget" -Force
+                        }
+                        Write-Host ">> [Archive] 아카이빙 완료: ${'$'}zipTarget"
+                    }
                 """.trimIndent()
             }
         }
@@ -330,6 +379,7 @@ object BuildEditor : BuildType({
 
     features {
         perfmon {
+            param("teamcity.perfmon.feature.enabled", "true")
         }
     }
 
@@ -392,12 +442,13 @@ object FetchSource : BuildType({
         script {
             name = "Setup"
             id = "Setup"
-            scriptContent = """.\Engine\Binaries\DotNET\GitDependencies\win-x64\GitDependencies.exe --force"""
+            scriptContent = """.\Engine\Binaries\DotNET\GitDependencies\win-x64\GitDependencies.exe"""
         }
     }
 
     features {
         perfmon {
+            param("teamcity.perfmon.feature.enabled", "true")
         }
     }
 
@@ -486,6 +537,7 @@ object SyncFork : BuildType({
 
     features {
         perfmon {
+            param("teamcity.perfmon.feature.enabled", "true")
         }
     }
 
