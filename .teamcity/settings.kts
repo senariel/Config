@@ -55,6 +55,10 @@ object BuildEditor : BuildType({
         param("env.UE5_DIST_PATH", """D:\Shared\UE5""")
         // 동시 실행 액션 수 상한 (OOM 완화). 빈값/0 = 엔진 기본. 스텝이 에이전트 BuildConfiguration.xml에 머지.
         param("MaxParallelActions", "10")
+        // Android 타깃 플랫폼 포함 여부 (Win64는 항상 포함). 에이전트에 Machine 범위 ANDROID_HOME/NDKROOT 필요.
+        checkbox("WithAndroid", "true", label = "Android 포함",
+            description = "Win64에 더해 Android 타깃(arm64+x64)도 빌드. 에이전트에 Android SDK/NDK 필요.",
+            display = ParameterDisplay.NORMAL, checked = "true", unchecked = "false")
     }
 
     vcs {
@@ -104,6 +108,21 @@ object BuildEditor : BuildType({
                         Write-Host ">> BuildConfiguration.xml not found on agent - skipping MaxParallelActions"
                     }
 
+                    # Android SDK 사전 점검 (WithAndroid=true). 미설치면 즉시 실패 → 1h+ 컴파일 뒤 실패 방지.
+                    # 에이전트는 서비스(LocalSystem)라 User 범위 env를 못 봄 → Machine 범위 ANDROID_HOME/NDKROOT 필요.
+                    if ('%WithAndroid%' -eq 'true') {
+                        ${'$'}sdk = ${'$'}env:ANDROID_HOME
+                        ${'$'}ndk = ${'$'}env:NDKROOT
+                        ${'$'}missing = @()
+                        if (-not ${'$'}sdk -or -not (Test-Path ${'$'}sdk)) { ${'$'}missing += 'ANDROID_HOME' }
+                        if (-not ${'$'}ndk -or -not (Test-Path ${'$'}ndk)) { ${'$'}missing += 'NDKROOT' }
+                        if (${'$'}missing.Count -gt 0) {
+                            Write-Host ("##teamcity[buildProblem description='Android SDK not ready on agent: missing " + (${'$'}missing -join ', ') + ". Run SetupAndroid.bat, promote env vars to Machine scope, restart agent. Or set WithAndroid=false.']")
+                            exit 1
+                        }
+                        Write-Host (">> Android SDK OK: ANDROID_HOME=" + ${'$'}sdk + " NDKROOT=" + ${'$'}ndk)
+                    }
+
                     if ('%CleanMode%' -eq 'FullRebuild') {
                         Write-Host ">> CleanMode = FullRebuild → UAT -clean 적용 (아래 args에 추가됨)"
                     }
@@ -126,7 +145,8 @@ object BuildEditor : BuildType({
                     # -target=Make / Installed / Build / Win64 4개로 쪼개져서 UAT가 fail함.
                     # 해결: ArgumentList에 따옴표 박힌 단일 문자열로 전달 → cmd가 그대로 파싱.
                     ${'$'}uatLog = [System.IO.Path]::GetTempFileName()
-                    ${'$'}uatArgsStr = 'BuildGraph -script="Engine/Build/InstalledEngineBuild.xml" -target="Make Installed Build Win64" -set:WithDDC=false -set:HostPlatformOnly=true -set:GameConfigurations=Development'
+                    # HostPlatformOnly=true는 플랫폼별 '기본값'만 끔 → Mac/Linux/iOS는 꺼진 채, 명시한 WithAndroid만 켜짐 (Win64는 호스트라 유지).
+                    ${'$'}uatArgsStr = 'BuildGraph -script="Engine/Build/InstalledEngineBuild.xml" -target="Make Installed Build Win64" -set:WithDDC=false -set:HostPlatformOnly=true -set:GameConfigurations=Development -set:WithAndroid=%WithAndroid%'
                     if ('%CleanMode%' -eq 'FullRebuild') {
                         ${'$'}uatArgsStr += ' -clean'
                     }
@@ -313,6 +333,11 @@ object BuildEditor : BuildType({
         }
     }
 
+    requirements {
+        // 엔진 빌드는 Agent_Win64 고정 (UE5 체크아웃·LocalBuilds·Android SDK가 있는 머신). MAGI_Main 등으로 배정 방지.
+        equals("teamcity.agent.name", "Agent_Win64")
+    }
+
     dependencies {
         snapshot(FetchSource) {
             runOnSameAgent = true
@@ -378,6 +403,8 @@ object FetchSource : BuildType({
 
     requirements {
         contains("teamcity.agent.jvm.os.name", "Windows 11")
+        // Build Editor와 같은 머신(UE5 체크아웃 공유). 단독 실행 시에도 다른 에이전트에 체크아웃 안 생기게.
+        equals("teamcity.agent.name", "Agent_Win64")
     }
 })
 

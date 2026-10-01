@@ -28,9 +28,12 @@ TeamCity 프로젝트 트리
     └── UnrealEngine5                   (One-way VS, 이 repo와 연결)
         ├── 파라미터: CleanMode (NORMAL display)
         ├── Sync Fork                   (스케줄 트리거, GitHub merge-upstream API로 포크 동기화)
-        ├── Fetch Source                (트리거 없음)
-        └── Build Editor                (VCS trigger 보유, snapshot dep로 FetchSource 선행)
+        ├── Fetch Source                (트리거 없음, Agent_Win64 고정)
+        └── Build Editor                (VCS trigger 보유, snapshot dep로 FetchSource 선행, Agent_Win64 고정)
+                                        (파라미터: WithAndroid 체크박스 기본 on, MaxParallelActions)
 ```
+
+- 에이전트: `Agent_Win64`(엔진 빌드 전용, UE5 체크아웃·Android SDK) / `MAGI_Main`(작업 PC, 게임 프로젝트 등). 엔진 빌드 두 구성은 **이름으로 Agent_Win64에 고정**해서 MAGI_Main에 100GB+ 체크아웃이 생기지 않게 함.
 
 - VCS 동기화 대상 repo: `https://github.com/senariel/Config` (이 repo, branch `main`)
 - 엔진 소스 repo: `https://github.com/senariel/UnrealEngine` (branch `release`)
@@ -76,6 +79,29 @@ TeamCity 프로젝트 트리
 ### 수동 실행 시
 - **Run Build Editor**: 위와 동일하게 둘 다 실행
 - **Run Fetch Source 단독**: Fetch Source만 실행 (디버깅용)
+
+## Android 타깃 플랫폼 (WithAndroid)
+
+Build Editor의 **`WithAndroid` 체크박스(기본 on)** 로 Win64에 더해 Android 타깃을 installed build에 포함. BuildGraph 인자에 `-set:WithAndroid=%WithAndroid%`.
+
+- **왜 HostPlatformOnly=true를 그대로 두나**: `InstalledEngineBuild.xml`에서 `HostPlatformOnly`는 각 플랫폼의 *기본값*(`DefaultWithPlatform` 등)만 끔. `WithAndroid`를 명시하면 기본값을 덮어써서 **Android만 켜지고 Mac/Linux/iOS는 꺼진 채** 유지. Win64는 호스트라 계속 포함. 엔진 소스 수정 없음.
+- **아키텍처**: `AndroidArchitectures`가 Option이 아니라 Property(`arm64+x64`)라 `-set`으로 못 바꿈 → arm64·x64(에뮬레이터) 둘 다 컴파일. 빌드 시간/메모리 증가.
+- **요구 SDK (UE 5.8.3, `Engine/Config/Android/Android_SDK.json`)**: NDK r27c(`27.2.12479018`, 허용 r27c~r29), platform `android-36`, build-tools `36.0.0`, cmake `3.22.1`.
+- **사전 점검**: 스텝 시작 시 `WithAndroid=true`인데 `ANDROID_HOME`/`NDKROOT`가 없거나 경로가 없으면 **즉시 실패**(buildProblem). 1h+ 컴파일 뒤에 실패하지 않게.
+- **JAVA_HOME**: 엔진 빌드(라이브러리 컴파일)엔 불필요. 게임을 APK로 패키징할 때 필요 — 그땐 JDK 22 말고 Android Studio의 `jbr` 권장.
+
+### 에이전트 준비 (Agent_Win64, 1회)
+1. Android Studio 설치 후 한 번 실행 (SDK 설치)
+2. 엔진의 `Engine\Extras\Android\SetupAndroid.bat` 실행 → NDK/cmake/build-tools 설치
+3. **관리자 PowerShell로 env를 Machine 범위로 승격 + 에이전트 재시작** (함정 #17):
+   ```powershell
+   foreach ($n in 'ANDROID_HOME','NDKROOT','NDK_ROOT') {
+     $v = [Environment]::GetEnvironmentVariable($n,'User')
+     if ($v) { [Environment]::SetEnvironmentVariable($n,$v,'Machine'); "$n = $v" } else { "$n 없음" }
+   }
+   Restart-Service "TCBuildAgent*"
+   ```
+4. TeamCity Agent 페이지 → Agent Parameters에 `env.NDKROOT`/`env.ANDROID_HOME`이 보이면 완료.
 
 ## CleanMode 파라미터
 
@@ -304,6 +330,13 @@ UBA executor가 Horde에 `GET http://<server>:13340/api/v1/server/auth`로 인�
 
 해결: Start-Process **직후 `$null = $uatProc.Handle`로 핸들 캐싱** → 종료 후 `.ExitCode`가 0으로 정상 반환. 추가로 `WaitForExit()` 후 읽고, null이면 0으로 간주하는 안전망. **Step 2(Distribute robocopy)도 같은 패턴이라 동일 수정** — 이쪽은 false 실패가 아니라, null ExitCode면 `>=8` 검사가 거짓이 되어 **robocopy 실제 실패를 못 잡는** 잠재 버그였음.
 
+### 17. SetupAndroid.bat은 env를 User 범위로만 설정 → 에이전트가 못 봄
+증상: Android SDK를 설치하고 `SetupAndroid.bat`까지 돌렸는데 빌드가 사전 점검에서 `missing ANDROID_HOME, NDKROOT`로 실패.
+
+원인: `SetupAndroid.bat`은 `ANDROID_HOME`/`NDKROOT`/`NDK_ROOT`/`JAVA_HOME`을 `SetEnvironmentVariable(..., 'User')`로 **로그인 사용자 범위**에만 씀. TeamCity 에이전트는 **LocalSystem 서비스**라 그 값을 못 봄 (함정 #4와 같은 계열).
+
+해결: 위 "에이전트 준비" 3번처럼 **Machine 범위로 승격 후 에이전트 재시작**. 에이전트는 env를 시작 시에만 읽으므로 재시작 필수. SDK 경로가 사용자 폴더(`C:\Users\<user>\AppData\Local\Android\Sdk`)여도 LocalSystem은 읽을 수 있어 그대로 사용 가능.
+
 ## 파일 구조
 
 ```
@@ -325,6 +358,7 @@ CLAUDE.md               ← 이 파일
 - 2026-06 (4차): `MaxParallelActions` 파라미터 추가 — Build Editor 스텝이 에이전트 BuildConfiguration.xml에 XML 머지로 주입(Horde 보존, 엔진 소스 무관). Link 메모리 OOM→UBA 크래시 완화(함정 #14). *(주: UBA executor는 이 설정 무시 — 효과 없음 확인. 진짜 원인은 공유 워커 머신 메모리.)*
 - 2026-06 (5차): watchdog에 **프로세스 트리 I/O 신호** 추가 — Make Installed Build의 LocalBuilds 대용량 복사 단계가 무활동으로 오판되던 문제(함정 #15).
 - 2026-06 (6차): Start-Process 핸들 캐싱(`$null = $proc.Handle`) — `.ExitCode`가 null로 잡혀 **빌드 성공(ExitCode=0)인데 실패 처리**되던 문제 수정(함정 #16). **빌드 #35에서 엔진 빌드 자체는 첫 완주 성공(1h50m).**
+- 2026-10: **Android 타깃 추가** — `WithAndroid` 체크박스(기본 on) + `-set:WithAndroid` + SDK 사전 점검(fail-fast). Build Editor/Fetch Source를 `Agent_Win64`에 이름 고정(새 에이전트 MAGI_Main 배정 방지). 함정 #17(SetupAndroid.bat의 User 범위 env).
 
 ## 다음에 할 만한 것 (TODO 후보)
 
