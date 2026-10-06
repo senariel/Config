@@ -219,8 +219,10 @@ try {
     Write-Host ('>> baseline 없음 - 비교 생략 (' + ${'$'}_.Exception.Message + ')')
 }
 
-${'$'}env:UE_CMD = ${'$'}ueCmd -replace '\', '/'
-& ${'$'}bash -c "Tools/core_gates.sh gates ${'$'}baseArg 2>&1 | tee gates-run.log"
+# UE_CMD는 bash 명령줄에 직접 넘긴다. 빌드 #1은 UE_CMD가 비어 기본 경로 /c/Dev/...로 exit=127 —
+# 정규식 -replace 대신 문자열 Replace 사용 (패턴 이스케이프 실수 여지 제거)
+${'$'}ueCmdPosix = ${'$'}ueCmd.Replace('\', '/')
+& ${'$'}bash -c "UE_CMD='${'$'}ueCmdPosix' Tools/core_gates.sh gates ${'$'}baseArg 2>&1 | tee gates-run.log"
 
 ${'$'}sums = @(Get-ChildItem 'gates' -Filter '*.summary.txt' -ErrorAction SilentlyContinue)
 if (${'$'}sums.Count -eq 0) { Write-Host "##teamcity[buildProblem description='Core Gates produced no summaries']"; exit 1 }
