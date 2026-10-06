@@ -3,6 +3,8 @@
 이 저장소는 **TeamCity가 빌드 파이프라인 설정을 코드로 저장**하는 곳입니다.
 UE5 엔진 코드(github.com/senariel/UnrealEngine)와는 별도로 분리되어 있습니다.
 
+> **전체 운영 위키**: Obsidian 볼트 `senariel/ObsidianVault`의 **`BuildMachine/`** 폴더(홈: `00 - 홈.md`). 인프라·TeamCity·엔진·Horde·LordMaker CI·테스트 기기·운영 절차·함정·결정 기록·미결 과제를 세션 인계용으로 정리. 설정을 바꾸면 위키의 해당 페이지도 함께 갱신할 것.
+
 ## 운영 모드: One-way Versioned Settings
 
 **원칙: `settings.kts`가 단일 소스. UI에서 직접 수정 불가.**
