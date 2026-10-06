@@ -487,7 +487,8 @@ object ServerTests : BuildType({
 
     vcs {
         root(ServerVcs)
-        root(GameVcs, "+:Core/tests/fixtures => lordmaker-fixtures")
+        // 에이전트 측 체크아웃은 'a => 접두/a' 형태만 허용 (경로 이름 변경 불가)
+        root(GameVcs, "+:Core/tests/fixtures => lordmaker-fixtures/Core/tests/fixtures")
         checkoutMode = CheckoutMode.ON_AGENT
         checkoutDir = "LordMakerServerTests"
     }
@@ -518,7 +519,7 @@ exit /b 1
 @echo off
 rem LordMakerServer pytest. lmcore*.pyd = LMCore 아티팩트(체크아웃 루트), fixtures = LordMaker Core/tests/fixtures 부분 체크아웃
 set PYTHONUTF8=1
-set LORDMAKER_FIXTURES=%teamcity.build.checkoutDir%\lordmaker-fixtures
+set LORDMAKER_FIXTURES=%teamcity.build.checkoutDir%\lordmaker-fixtures\Core\tests\fixtures
 dir /b lmcore*.pyd
 if exist .venv rmdir /s /q .venv
 "%env.LM_PYTHON%" -m venv .venv || exit /b 1

@@ -65,7 +65,7 @@ DevPub / LordMaker                (VCS 루트: GameVcs = senariel/LordMaker, Ser
 ### Server / Server Tests
 - ServerVcs, 모든 브랜치 푸시.
 - 아티팩트 의존: LMCore 마지막 성공 main 빌드의 `.pyd` → 체크아웃 루트.
-- GameVcs 보조 체크아웃(체크아웃 규칙 `+:Core/tests/fixtures => lordmaker-fixtures`)으로 골든 fixtures 제공 — env `LORDMAKER_FIXTURES=<체크아웃>\lordmaker-fixtures` (서버 main `087deb7`부터 지원, 경로 없으면 해당 테스트 skip).
+- GameVcs 보조 체크아웃(체크아웃 규칙 `+:Core/tests/fixtures => lordmaker-fixtures/Core/tests/fixtures` — 에이전트 측 체크아웃은 경로 이름 변경 불가, 접두만 가능)으로 골든 fixtures 제공 — env `LORDMAKER_FIXTURES=<체크아웃>\lordmaker-fixtures` (서버 main `087deb7`부터 지원, 경로 없으면 해당 테스트 skip).
 - 공통 env `PYTHONUTF8=1` (cp949 콘솔 출력 함정).
 - `python -m venv` → `pip install -e ".[dev]"` → `python -m pytest tests -q --junitxml=...` + JUnit 리포트 게시.
 - 주의: 클라 머지 ~ 서버 동기 커밋 사이 RulesVersion 어긋남 시 lmcore분 테스트 skip은 정상.
