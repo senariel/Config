@@ -597,7 +597,7 @@ object EngineVcs : GitVcsRoot({
 
 object LordMaker : Project({
     name = "LordMaker"
-    description = "LordMaker 게임 패키징 — 사내 설치형 UE 5.8.3(D:\Shared\UE5)으로 BuildCookRun"
+    description = "LordMaker 게임 패키징 — 사내 설치형 UE 5.8.3(D:/Shared/UE5)으로 BuildCookRun"
 
     vcsRoot(LordMakerVcs)
     buildType(LordMakerPackage)
