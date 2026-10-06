@@ -45,8 +45,9 @@ project {
     }
 }
 
-// 토큰은 이 프로젝트(LordMaker)에서 DevPubApp으로 발급한 것 — 프로젝트에 묶이므로 다른 프로젝트에선 못 씀.
-// DevPubApp은 모든 저장소 접근 허용이라 서버 저장소도 같은 토큰을 쓴다.
+// DevPubApp refreshable token은 발급한 프로젝트(와 하위)에서만, 그리고 발급할 때의 저장소에만 유효하다
+// (엔진 토큰 → LordMaker, LordMaker 토큰 → LordMakerServer 모두 'Repository not found').
+// GameVcs 토큰 = LordMaker 프로젝트에서 발급, ServerVcs 토큰 = 상위 DevPub 프로젝트에서 발급(VCS 루트 DevPub_LordMakerServer).
 object GameVcs : GitVcsRoot({
     name = "LordMaker"
     url = "https://github.com/senariel/LordMaker"
@@ -67,7 +68,7 @@ object ServerVcs : GitVcsRoot({
     branchSpec = "refs/heads/*"
     authMethod = token {
         userName = "oauth2"
-        tokenId = "tc_token_id:CID_3ab2f5c96314802c7074714f2b03c3a5:-1:61fab572-6823-4a57-910f-827976630910"
+        tokenId = "tc_token_id:CID_3ab2f5c96314802c7074714f2b03c3a5:-1:fbbb8e0e-102e-4a56-86dd-ce8092dafdb2"
     }
 })
 
