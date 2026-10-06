@@ -65,14 +65,16 @@ DevPub / LordMaker                (VCS 루트: GameVcs = senariel/LordMaker, Ser
 ### Server / Server Tests
 - ServerVcs, 모든 브랜치 푸시.
 - 아티팩트 의존: LMCore 마지막 성공 main 빌드의 `.pyd` → 체크아웃 루트.
-- GameVcs 보조 체크아웃(체크아웃 규칙 `+:Core/tests/fixtures => lordmaker-fixtures`)으로 골든 fixtures 제공 — 서버 측 경로 주입(env, 예: `LORDMAKER_FIXTURES`) 지원을 서버 세션에 요청.
+- GameVcs 보조 체크아웃(체크아웃 규칙 `+:Core/tests/fixtures => lordmaker-fixtures`)으로 골든 fixtures 제공 — env `LORDMAKER_FIXTURES=<체크아웃>\lordmaker-fixtures` (서버 main `087deb7`부터 지원, 경로 없으면 해당 테스트 skip).
+- 공통 env `PYTHONUTF8=1` (cp949 콘솔 출력 함정).
 - `python -m venv` → `pip install -e ".[dev]"` → `python -m pytest tests -q --junitxml=...` + JUnit 리포트 게시.
 - 주의: 클라 머지 ~ 서버 동기 커밋 사이 RulesVersion 어긋남 시 lmcore분 테스트 skip은 정상.
 
 ### Server / Static Data Drift
 - 스케줄 트리거(매일 03:30), GameVcs main + ServerVcs main.
-- 비교 로직은 **서버 저장소 스크립트**(서버 세션에 작성 요청)를 CI가 실행만 한다: 클라 `Content/Data/*.xml` ↔ 서버 `data/static/*` 개행 정규화 sha256 + `RULES_VERSION`/`STATIC_DATA_VERSION` 일치.
-- 스크립트가 준비되기 전에는 구성을 만들지 않는다.
+- 비교 로직은 **서버 저장소 스크립트**를 CI가 실행만 한다: `python tools/check_static_drift.py --client <LordMaker 체크아웃> --server <서버 체크아웃>` (표준 라이브러리만, 불일치·상수 추출 실패 시 exit 1 + 차이 목록 stdout). 검사 = 클라 `Content/Data/*.xml` ↔ 서버 `data/static/*` 개행 정규화 sha256, RulesVersion(클라 `Source/LMCore/Public/lmcore/Simulation.h` ↔ 서버 `app/main.py`), StaticDataVersion(클라 `Source/LordMaker/Public/Combat/LMSiegeInfo.h` ↔ 서버).
+- GameVcs 체크아웃 규칙(→ `client/`): `+:Content/Data`, `+:Source/LMCore/Public/lmcore/Simulation.h`, `+:Source/LordMaker/Public/Combat/LMSiegeInfo.h` — LFS 대상 아님, 전체 체크아웃 불필요. ServerVcs → `server/`.
+- env `PYTHONUTF8=1`.
 
 ## 오류 처리
 
@@ -90,7 +92,7 @@ DevPub / LordMaker                (VCS 루트: GameVcs = senariel/LordMaker, Ser
 | 항목 | 담당 |
 |---|---|
 | Agent_Win64에 Python 3.14.5 (모든 사용자) 설치 | 사용자 |
-| Server Tests용 fixtures 경로 env 지원 | 로드메이커 서버 세션 |
-| Static Data Drift 비교 스크립트 | 로드메이커 서버 세션 |
+| ~~Server Tests용 fixtures 경로 env 지원~~ | 완료 — 서버 `087deb7` (`LORDMAKER_FIXTURES`) |
+| ~~Static Data Drift 비교 스크립트~~ | 완료 — 서버 `087deb7` (`tools/check_static_drift.py`) |
 | Android 컴파일 수정(fix/android-compile) main 머지 | 로드메이커 세션 + 사용자 승인 |
 | Device 요구사항(기기·연결·단일 APK) | 사용자 |
