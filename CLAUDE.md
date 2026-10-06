@@ -343,11 +343,29 @@ UBA executor가 Horde에 `GET http://<server>:13340/api/v1/server/auth`로 인�
 
 해결: 위 "에이전트 준비" 3번처럼 **Machine 범위로 승격 후 에이전트 재시작**. 에이전트는 env를 시작 시에만 읽으므로 재시작 필수. SDK 경로가 사용자 폴더(`C:\Users\<user>\AppData\Local\Android\Sdk`)여도 LocalSystem은 읽을 수 있어 그대로 사용 가능.
 
-## LordMaker 패키징 (`DevPub / LordMaker / Package`)
+## LordMaker CI (`DevPub / LordMaker`)
+
+구조 (설계: `docs/superpowers/specs/2026-10-06-lordmaker-ci-structure-design.md`):
+
+| 하위 프로젝트 | 구성 | 트리거 | 하는 일 |
+|---|---|---|---|
+| Client | Editor Build | Core Gates 체인 | `Build.bat LordMakerEditor Win64 Development` (컴파일만) |
+| Client | Android Compile | 모든 브랜치 푸시 | `Build.bat LordMaker Android Development` (쿡 없음) |
+| Client | Core Gates | 모든 브랜치 푸시 (Editor Build 스냅샷 의존, 같은 체크아웃 폴더 `LordMakerCI`) | `Tools/core_gates.sh`. exit≠0 실패, 마지막 성공 main `gates.zip` 대비 DIFF는 경고 |
+| Client | Package | main 푸시 + 수동 | BuildCookRun (아래) |
+| Server | LMCore | LordMaker `Core/**`·`Source/LMCore/**` 변경 | vcvars64 → CMake/Ninja → ctest(`PYTHONUTF8=1`), 아티팩트 `lmcore*.pyd` |
+| Server | Server Tests | LordMakerServer 모든 브랜치 | LMCore main `.pyd` + `LORDMAKER_FIXTURES` → pytest(JUnit) |
+| Server | Static Data Drift | 매일 03:30 | 서버 `tools/check_static_drift.py` (0 일치 / 1 드리프트 / 2 체크아웃 문제) |
+
+- 공통 파라미터(프로젝트 레벨): `env.UE5_ENGINE_ROOT`, `env.LM_PYTHON`(`C:\Program Files\Python314\python.exe` — **모든 사용자 설치** 필요, LocalSystem 에이전트), `env.VCVARS64`.
+- 서버 배포·재시작은 넣지 않음(서버 세션이 버전 동기·.pyd 교체·DB와 묶어 수동 관리). Device(테스트 기기)·Shipping은 미구현.
+- 함정: Package `-archivedirectory`는 **플랫폼별 경로를 직접** 준다. UE(`DeploymentContext.cs`)는 경로에 플랫폼 이름이 들어 있으면 `Windows`/`Android_ASTC` 하위 폴더를 붙이지 않는데, 에이전트 work 경로 `D:\teamcity\agent\Win64\...`의 `Win64` 때문에 Win64 결과가 `Archive\` 바로 아래로 가서 아티팩트가 비었었다(#29).
+
+### Package / 공통 세부
 
 - **설정 위치가 엔진과 다름**: `.teamcity-lordmaker/settings.kts`. TeamCity 프로젝트 `LordMaker`(DevPub 하위)의 Versioned Settings가 같은 Config 저장소를 `settingsPath=.teamcity-lordmaker`로 따로 읽는다(VCS 루트 `DevPub_Config`). 엔진(`.teamcity/`)과 독립적으로 반영·실패함.
 - VCS 토큰(`tc_token_id:...61fab572...`)은 **LordMaker 프로젝트에서 DevPubApp으로 발급**한 것. TeamCity의 refreshable token은 발급한 프로젝트(와 하위)에서만 쓸 수 있어 엔진 쪽 토큰을 재사용하면 `Repository not found`/`token is associated with other projects`로 실패한다.
-- 게임 저장소 `senariel/LordMaker`(main, Git LFS). 설치형 엔진 `D:\Shared\UE5`(Build Editor 산출물)로 `RunUAT BuildCookRun`. Agent_Win64 고정, **수동 실행**.
+- 게임 저장소 `senariel/LordMaker`(main, Git LFS). 설치형 엔진 `D:\Shared\UE5`(Build Editor 산출물)로 `RunUAT BuildCookRun`. Agent_Win64 고정(LordMaker 전 구성 동일).
 - 파라미터: `Platforms`(Win64+Android / Win64 / Android), `ClientConfig`(Development만 — 설치형 엔진이 `GameConfigurations=Development`로 빌드됨. Shipping은 엔진 재빌드 필요), `LMServerUrl`.
 - 서버 주소: 게임 코드 수정 없이 작업 사본의 `Config/<Platform>/<Platform>Engine.ini`에 `[ConsoleVariables] LM.Server.Url=...`를 주입(커밋 안 함). `LM.Server.Url`은 ECVF_Default cvar라 ini로 덮어써짐.
 - Android는 `-cookflavor=ASTC` 고정. 산출물은 빌드 아티팩트(Win64 zip, Android zip(APK+OBB+설치 스크립트), `apk/*.apk`).
@@ -382,6 +400,7 @@ CLAUDE.md               ← 이 파일
 - 2026-10: **Android 타깃 추가** — `WithAndroid` 체크박스(기본 on) + `-set:WithAndroid` + SDK 사전 점검(fail-fast). Build Editor/Fetch Source를 `Agent_Win64`에 이름 고정(새 에이전트 MAGI_Main 배정 방지). 함정 #17(SetupAndroid.bat의 User 범위 env).
 - 2026-10 (2차): `ArchiveBuild` zip을 배포 폴더 밖 `UE5_ARCHIVE_PATH`로 이동 + `ArchiveKeepCount` 보관 개수 제한 + 실패 시 기존 zip 보존. (배포 폴더 안에 만들면 다음 빌드의 robocopy /MIR이 지우던 문제.)
 - 2026-10 (3차): **LordMaker 패키징 구성** 추가(Win64+Android Development, 서버 주소 ini 주입, 아티팩트 게시). 루트에 UI로 만들어져 있던 `LordMaker / Build Android`(모든 브랜치 VCS 트리거)는 일시 정지 — 서버 재부팅 때 밀린 브랜치 빌드가 Agent_Win64를 몇 시간씩 점유하던 문제.
+- 2026-10 (5차): LordMaker를 Client(Editor Build·Android Compile·Core Gates·Package)/Server(LMCore·Server Tests·Static Data Drift) 하위 프로젝트로 분리. Package 아티팩트 미게시(#29) 수정.
 - 2026-10 (4차): LordMaker를 `DevPub / LordMaker`로 재배치 — 엔진 DSL 하위 프로젝트가 아니라 **별도 settingsPath(`.teamcity-lordmaker/`)** 로 분리. 엔진 DSL 루트를 DevPub으로 올리는 안은 Sync Fork 보안 토큰(UnrealEngine5 프로젝트에 저장) 유실 위험 때문에 보류. 옛 UI 구성 4개 삭제.
 
 ## 다음에 할 만한 것 (TODO 후보)
@@ -390,4 +409,5 @@ CLAUDE.md               ← 이 파일
 - [ ] Build Editor 앞단에 Horde 헬스체크 (`curl http://localhost:PORT/api/v1/server/info`)
 - [ ] Build Editor 아티팩트로 `.modules` + DLL 해시 publish (모듈 로딩 디버깅용)
 - [ ] 주간 정기 트리거 — `CleanMode=FullRebuild` 강제로 누적 쓰레기 정리
-- [ ] LordMaker 브랜치별 자동 Android 컴파일 검증이 필요하면 Package와 별도의 가벼운 구성(-build만)으로
+- [ ] LordMaker Device(테스트 기기 등록·설치) — 기기 OS·연결 방식·단일 APK 여부 결정 후
+- [ ] 에이전트 추가 — 브랜치 푸시마다 3개 빌드가 Agent_Win64 하나에 몰림(Package 수 시간 중엔 대기)
