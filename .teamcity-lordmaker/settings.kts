@@ -26,6 +26,7 @@ project {
 
     subProject(Client)
     subProject(Server)
+    subProject(Device)
 
     params {
         param("env.UE5_ENGINE_ROOT", """D:\Shared\UE5""")
@@ -279,11 +280,13 @@ object Package : BuildType({
     name = "Package"
     description = "Win64/Android Development 쿠킹·패키징. main 푸시 자동 + 수동. 산출물은 빌드 아티팩트."
 
-    // -archivedirectory를 플랫폼별(Archive/Win64, Archive/Android)로 직접 지정하므로 경로가 고정됨
+    // -archivedirectory를 플랫폼별(Archive/Win64, Archive/Android)로 직접 지정하므로 경로가 고정됨.
+    // 스테이징 UECommandLine.txt = Deploy to Device가 테스트 DeviceId를 붙일 기본 명령줄
     artifactRules = """
         Archive/Win64 => LordMaker-Win64-%ClientConfig%.zip
         Archive/Android => LordMaker-Android-%ClientConfig%.zip
         Archive/Android/*.apk => apk
+        Saved/StagedBuilds/Android*/UECommandLine.txt => apk
     """.trimIndent()
 
     params {
@@ -618,6 +621,292 @@ exit /b 1
             branchFilter = "+:<default>"
             triggerBuild = always()
             withPendingChangesOnly = false
+        }
+    }
+
+    requirements {
+        equals("teamcity.agent.name", "Agent_Win64")
+    }
+})
+
+// ───────────────────────────── Device ─────────────────────────────
+
+object Device : Project({
+    name = "Device"
+    description = "테스트 기기(Android) 등록·배포 — Wi-Fi adb(무선 디버깅), 수동 실행. 설치는 에이전트(AYA-ZZANG)의 adb."
+
+    buildType(RegisterDevice)
+    buildType(DeployToDevice)
+    buildTypesOrder = arrayListOf(RegisterDevice, DeployToDevice)
+})
+
+object RegisterDevice : BuildType({
+    name = "Register Device"
+    description = "휴대폰 무선 디버깅 '페어링 코드로 기기 페어링' 화면의 IP:포트·6자리 코드로 adb pair (기기당 1회)."
+
+    params {
+        text("PairAddress", "", label = "페어링 주소 (IP:포트)",
+                description = "휴대폰 설정 → 개발자 옵션 → 무선 디버깅 → '페어링 코드로 기기 페어링' 화면의 IP 주소 및 포트",
+                display = ParameterDisplay.PROMPT, allowEmpty = false)
+        password("PairCode", "", label = "페어링 코드 (6자리)",
+                description = "같은 화면의 Wi-Fi 페어링 코드 — 1~2분 안에 만료되므로 화면을 띄운 직후 실행",
+                display = ParameterDisplay.PROMPT)
+    }
+
+    steps {
+        powerShell {
+            name = "adb pair"
+            id = "Pair"
+            scriptMode = script {
+                content = """
+# --- adb 공통 (Register/Deploy 앞부분에 삽입) ---
+${'$'}ErrorActionPreference = 'Continue'
+${'$'}adb = Join-Path ${'$'}env:ANDROID_HOME 'platform-tools\adb.exe'
+if (-not ${'$'}env:ANDROID_HOME -or -not (Test-Path ${'$'}adb)) { Write-Host "##teamcity[buildProblem description='adb not found under ANDROID_HOME on the agent']"; exit 1 }
+& ${'$'}adb start-server | Out-Null
+
+function Invoke-Adb([string[]]${'$'}adbArgs) {
+    # 네이티브 stderr를 문자열로 합쳐 반환 (PS 5.1 ErrorRecord 장식 제거)
+    ${'$'}lines = & ${'$'}adb @adbArgs 2>&1 | ForEach-Object { "${'$'}_" }
+    return (${'$'}lines -join "`n")
+}
+
+function Connect-WirelessDevices([string]${'$'}manualAddress) {
+    # mDNS로 찾은 무선 디버깅 연결 엔드포인트(_adb-tls-connect)에 연결. 페어링된 기기만 성공한다.
+    ${'$'}svc = Invoke-Adb @('mdns', 'services')
+    ${'$'}found = 0
+    foreach (${'$'}l in (${'$'}svc -split "`n")) {
+        if (${'$'}l -match '_adb-tls-connect\._tcp\.?\s+(\S+:\d+)') {
+            ${'$'}found++
+            ${'$'}r = Invoke-Adb @('connect', ${'$'}Matches[1])
+            Write-Host (">> adb connect " + ${'$'}Matches[1] + " : " + ${'$'}r.Trim())
+        }
+    }
+    if (${'$'}manualAddress) {
+        ${'$'}r = Invoke-Adb @('connect', ${'$'}manualAddress)
+        Write-Host (">> adb connect " + ${'$'}manualAddress + " (수동) : " + ${'$'}r.Trim())
+    }
+    if (${'$'}found -eq 0 -and -not ${'$'}manualAddress) {
+        Write-Host '>> mDNS에서 무선 디버깅 기기를 찾지 못함 (무선 디버깅 꺼짐 / 다른 서브넷 / 방화벽의 mDNS 차단). ConnectAddress로 직접 지정 가능.'
+    }
+    Start-Sleep -Seconds 2
+}
+
+function Get-OnlineDevices {
+    # 같은 기기가 mDNS 이름과 IP:포트 두 줄로 보일 수 있어 ro.serialno로 중복 제거
+    ${'$'}list = @()
+    ${'$'}seen = @{}
+    foreach (${'$'}l in ((Invoke-Adb @('devices', '-l')) -split "`n" | Select-Object -Skip 1)) {
+        if (${'$'}l -notmatch '^(\S+)\s+device\b') { continue }
+        ${'$'}serial = ${'$'}Matches[1]
+        ${'$'}model = 'unknown'
+        if (${'$'}l -match 'model:(\S+)') { ${'$'}model = ${'$'}Matches[1] }
+        ${'$'}hw = (Invoke-Adb @('-s', ${'$'}serial, 'shell', 'getprop', 'ro.serialno')).Trim()
+        if (-not ${'$'}hw) { ${'$'}hw = ${'$'}serial }
+        if (${'$'}seen.ContainsKey(${'$'}hw)) { continue }
+        ${'$'}seen[${'$'}hw] = ${'$'}true
+        ${'$'}list += [pscustomobject]@{ Serial = ${'$'}serial; Model = ${'$'}model; HwSerial = ${'$'}hw }
+    }
+    return ,${'$'}list
+}
+
+# --- Register Device: adb pair (기기당 1회, 페어링 키는 에이전트 adb에 영구 저장) ---
+${'$'}addr = '%PairAddress%'.Trim()
+${'$'}code = '%PairCode%'.Trim()
+if (${'$'}addr -notmatch '^\d{1,3}(\.\d{1,3}){3}:\d+${'$'}') { Write-Host "##teamcity[buildProblem description='PairAddress must be IP:port from the phone pairing dialog']"; exit 1 }
+if (${'$'}code -notmatch '^\d{6}${'$'}') { Write-Host "##teamcity[buildProblem description='PairCode must be the 6-digit Wi-Fi pairing code']"; exit 1 }
+
+${'$'}r = Invoke-Adb @('pair', ${'$'}addr, ${'$'}code)
+Write-Host (">> adb pair " + ${'$'}addr + " : " + ${'$'}r.Trim())
+if (${'$'}r -notmatch 'Successfully paired') {
+    Write-Host "##teamcity[buildProblem description='adb pair failed - code expired (1-2 min), wrong address, or phone on another subnet']"
+    exit 1
+}
+
+Connect-WirelessDevices ''
+${'$'}devices = Get-OnlineDevices
+Write-Host ">> 현재 연결된 기기:"
+foreach (${'$'}d in ${'$'}devices) { Write-Host ("   " + ${'$'}d.Model + "  serial=" + ${'$'}d.HwSerial + "  (" + ${'$'}d.Serial + ")") }
+Write-Host ">> 페어링 완료. 이제 Deploy to Device로 설치할 수 있습니다 (휴대폰의 무선 디버깅이 켜져 있어야 함)."
+                """.trimIndent()
+            }
+        }
+    }
+
+    requirements {
+        equals("teamcity.agent.name", "Agent_Win64")
+    }
+})
+
+object DeployToDevice : BuildType({
+    name = "Deploy to Device"
+    description = "Package APK 설치 + 테스트 DeviceId(lmtest-<모델>-<시리얼해시8>) 명령줄 주입·검증. 검증 실패 기기는 앱 실행 금지(실계정 보호)."
+
+    params {
+        text("DeviceFilter", "", label = "대상 기기 필터",
+                description = "모델명 또는 시리얼 일부. 비우면 연결된 테스트 기기 전부",
+                display = ParameterDisplay.NORMAL, allowEmpty = true)
+        text("ConnectAddress", "", label = "직접 연결 주소 (선택)",
+                description = "mDNS로 기기를 못 찾을 때: 휴대폰 무선 디버깅 화면의 'IP 주소 및 포트'(페어링 포트와 다름)",
+                display = ParameterDisplay.NORMAL, allowEmpty = true)
+        checkbox("LaunchAfterInstall", "false", label = "설치 후 실행",
+                description = "실행 후 logcat에서 로그인 deviceId가 lmtest-인지 확인 (아니면 강제 종료·실패)",
+                checked = "true", unchecked = "false")
+    }
+
+    steps {
+        powerShell {
+            name = "Install + inject test DeviceId"
+            id = "Deploy"
+            scriptMode = script {
+                content = """
+# --- adb 공통 (Register/Deploy 앞부분에 삽입) ---
+${'$'}ErrorActionPreference = 'Continue'
+${'$'}adb = Join-Path ${'$'}env:ANDROID_HOME 'platform-tools\adb.exe'
+if (-not ${'$'}env:ANDROID_HOME -or -not (Test-Path ${'$'}adb)) { Write-Host "##teamcity[buildProblem description='adb not found under ANDROID_HOME on the agent']"; exit 1 }
+& ${'$'}adb start-server | Out-Null
+
+function Invoke-Adb([string[]]${'$'}adbArgs) {
+    # 네이티브 stderr를 문자열로 합쳐 반환 (PS 5.1 ErrorRecord 장식 제거)
+    ${'$'}lines = & ${'$'}adb @adbArgs 2>&1 | ForEach-Object { "${'$'}_" }
+    return (${'$'}lines -join "`n")
+}
+
+function Connect-WirelessDevices([string]${'$'}manualAddress) {
+    # mDNS로 찾은 무선 디버깅 연결 엔드포인트(_adb-tls-connect)에 연결. 페어링된 기기만 성공한다.
+    ${'$'}svc = Invoke-Adb @('mdns', 'services')
+    ${'$'}found = 0
+    foreach (${'$'}l in (${'$'}svc -split "`n")) {
+        if (${'$'}l -match '_adb-tls-connect\._tcp\.?\s+(\S+:\d+)') {
+            ${'$'}found++
+            ${'$'}r = Invoke-Adb @('connect', ${'$'}Matches[1])
+            Write-Host (">> adb connect " + ${'$'}Matches[1] + " : " + ${'$'}r.Trim())
+        }
+    }
+    if (${'$'}manualAddress) {
+        ${'$'}r = Invoke-Adb @('connect', ${'$'}manualAddress)
+        Write-Host (">> adb connect " + ${'$'}manualAddress + " (수동) : " + ${'$'}r.Trim())
+    }
+    if (${'$'}found -eq 0 -and -not ${'$'}manualAddress) {
+        Write-Host '>> mDNS에서 무선 디버깅 기기를 찾지 못함 (무선 디버깅 꺼짐 / 다른 서브넷 / 방화벽의 mDNS 차단). ConnectAddress로 직접 지정 가능.'
+    }
+    Start-Sleep -Seconds 2
+}
+
+function Get-OnlineDevices {
+    # 같은 기기가 mDNS 이름과 IP:포트 두 줄로 보일 수 있어 ro.serialno로 중복 제거
+    ${'$'}list = @()
+    ${'$'}seen = @{}
+    foreach (${'$'}l in ((Invoke-Adb @('devices', '-l')) -split "`n" | Select-Object -Skip 1)) {
+        if (${'$'}l -notmatch '^(\S+)\s+device\b') { continue }
+        ${'$'}serial = ${'$'}Matches[1]
+        ${'$'}model = 'unknown'
+        if (${'$'}l -match 'model:(\S+)') { ${'$'}model = ${'$'}Matches[1] }
+        ${'$'}hw = (Invoke-Adb @('-s', ${'$'}serial, 'shell', 'getprop', 'ro.serialno')).Trim()
+        if (-not ${'$'}hw) { ${'$'}hw = ${'$'}serial }
+        if (${'$'}seen.ContainsKey(${'$'}hw)) { continue }
+        ${'$'}seen[${'$'}hw] = ${'$'}true
+        ${'$'}list += [pscustomobject]@{ Serial = ${'$'}serial; Model = ${'$'}model; HwSerial = ${'$'}hw }
+    }
+    return ,${'$'}list
+}
+
+# --- Deploy to Device: 설치 → 테스트 DeviceId 명령줄 주입·검증 → (옵션) 실행·로그인 ID 확인 ---
+# ★ 실계정 보호: 명령줄 파일 push·검증이 실패한 기기에서는 절대 앱을 실행하지 않는다
+${'$'}pkg       = 'com.devpub.lordmaker'
+${'$'}remoteDir = "/sdcard/Android/data/${'$'}pkg/files/UnrealGame/LordMaker"
+${'$'}filter    = '%DeviceFilter%'.Trim()
+${'$'}launch    = '%LaunchAfterInstall%' -eq 'true'
+
+${'$'}apk = Get-ChildItem 'apk' -Filter '*.apk' -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not ${'$'}apk) { Write-Host "##teamcity[buildProblem description='No APK in the Package artifact (apk/*.apk)']"; exit 1 }
+Write-Host (">> APK: " + ${'$'}apk.Name + " (" + [math]::Round(${'$'}apk.Length / 1MB, 1) + " MB)")
+
+# 기본 명령줄 = Package가 게시한 스테이징 UECommandLine.txt (외부 파일이 명령줄 전체를 '교체'하므로 반드시 포함)
+${'$'}baseFile = Join-Path 'apk' 'UECommandLine.txt'
+if (Test-Path ${'$'}baseFile) {
+    ${'$'}baseCmd = (Get-Content ${'$'}baseFile -TotalCount 1).Trim()
+} else {
+    ${'$'}baseCmd = '../../../LordMaker/LordMaker.uproject'
+    Write-Host "##teamcity[message text='apk/UECommandLine.txt not in artifact - using default base command line' status='WARNING']"
+}
+Write-Host (">> base command line: " + ${'$'}baseCmd)
+
+${'$'}manualAddress = '%ConnectAddress%'.Trim()
+Connect-WirelessDevices ${'$'}manualAddress
+${'$'}devices = Get-OnlineDevices
+if (${'$'}filter) { ${'$'}devices = @(${'$'}devices | Where-Object { ${'$'}_.Model -like "*${'$'}filter*" -or ${'$'}_.HwSerial -like "*${'$'}filter*" }) }
+if (${'$'}devices.Count -eq 0) {
+    Write-Host "##teamcity[buildProblem description='No connected test device - turn on Wireless debugging, same subnet as the agent, Register Device first']"
+    exit 1
+}
+
+${'$'}sha = [System.Security.Cryptography.SHA256]::Create()
+${'$'}utf8 = New-Object System.Text.UTF8Encoding ${'$'}false   # BOM 없이 (BOM이 명령줄 첫 글자로 들어가면 안 됨)
+${'$'}failed = @()
+foreach (${'$'}d in ${'$'}devices) {
+    ${'$'}s = ${'$'}d.Serial
+    ${'$'}hash = (-join (${'$'}sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(${'$'}d.HwSerial)) | Select-Object -First 4 | ForEach-Object { ${'$'}_.ToString('x2') }))
+    ${'$'}slug = (${'$'}d.Model.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
+    if (${'$'}slug.Length -gt 40) { ${'$'}slug = ${'$'}slug.Substring(0, 40).Trim('-') }
+    ${'$'}id = "lmtest-${'$'}slug-${'$'}hash"
+    ${'$'}line = "${'$'}baseCmd -LMDeviceId=${'$'}id"
+    Write-Host "##teamcity[blockOpened name='${'$'}(${'$'}d.Model) (${'$'}id)']"
+
+    ${'$'}ok = ${'$'}true
+    ${'$'}r = Invoke-Adb @('-s', ${'$'}s, 'install', '-r', ${'$'}apk.FullName)
+    Write-Host (">> install: " + ${'$'}r.Trim())
+    if (${'$'}r -notmatch 'Success') { ${'$'}ok = ${'$'}false; Write-Host '>> 설치 실패' }
+
+    if (${'$'}ok) {
+        ${'$'}null = Invoke-Adb @('-s', ${'$'}s, 'shell', 'mkdir', '-p', ${'$'}remoteDir)
+        ${'$'}tmp = [System.IO.Path]::GetTempFileName()
+        [System.IO.File]::WriteAllText(${'$'}tmp, ${'$'}line, ${'$'}utf8)
+        ${'$'}r = Invoke-Adb @('-s', ${'$'}s, 'push', ${'$'}tmp, "${'$'}remoteDir/UECommandLine.txt")
+        Remove-Item ${'$'}tmp -Force
+        Write-Host (">> push: " + ${'$'}r.Trim())
+        ${'$'}back = (Invoke-Adb @('-s', ${'$'}s, 'shell', 'cat', "${'$'}remoteDir/UECommandLine.txt")).Trim()
+        if (${'$'}back -ne ${'$'}line) { ${'$'}ok = ${'$'}false; Write-Host (">> 명령줄 파일 검증 실패 - 읽은 값: " + ${'$'}back) }
+        else { Write-Host (">> 명령줄 파일 확인: " + ${'$'}back) }
+    }
+
+    if (${'$'}ok -and ${'$'}launch) {
+        ${'$'}null = Invoke-Adb @('-s', ${'$'}s, 'logcat', '-c')
+        ${'$'}null = Invoke-Adb @('-s', ${'$'}s, 'shell', 'monkey', '-p', ${'$'}pkg, '-c', 'android.intent.category.LAUNCHER', '1')
+        ${'$'}ids = @()
+        for (${'$'}i = 0; ${'$'}i -lt 30 -and ${'$'}ids.Count -eq 0; ${'$'}i++) {
+            Start-Sleep -Seconds 2
+            ${'$'}log = Invoke-Adb @('-s', ${'$'}s, 'logcat', '-d')
+            ${'$'}ids = @([regex]::Matches(${'$'}log, 'deviceId=([A-Za-z0-9._:-]+)') | ForEach-Object { ${'$'}_.Groups[1].Value } | Select-Object -Unique)
+        }
+        ${'$'}realIds = @(${'$'}ids | Where-Object { ${'$'}_ -notlike 'lmtest-*' })
+        if (${'$'}ids.Count -eq 0) {
+            Write-Host "##teamcity[message text='${'$'}(${'$'}d.Model): login deviceId not seen in logcat within 60s (command line file was verified)' status='WARNING']"
+        } elseif (${'$'}realIds.Count -eq 0) {
+            Write-Host (">> 로그인 deviceId 확인: " + (${'$'}ids -join ', '))
+        } else {
+            ${'$'}null = Invoke-Adb @('-s', ${'$'}s, 'shell', 'am', 'force-stop', ${'$'}pkg)
+            ${'$'}ok = ${'$'}false
+            Write-Host '>> ★ 테스트가 아닌 deviceId로 로그인 시도 감지 - 앱 강제 종료'
+        }
+    }
+
+    Write-Host "##teamcity[blockClosed name='${'$'}(${'$'}d.Model) (${'$'}id)']"
+    if (-not ${'$'}ok) { ${'$'}failed += ${'$'}d.Model; Write-Host "##teamcity[buildProblem description='Deploy failed on ${'$'}(${'$'}d.Model) (${'$'}id)' identity='deploy_${'$'}hash']" }
+}
+if (${'$'}failed.Count -gt 0) { exit 1 }
+Write-Host (">> 배포 완료: " + ${'$'}devices.Count + "대")
+                """.trimIndent()
+            }
+        }
+    }
+
+    dependencies {
+        // 기본 = Package 마지막 성공 main. 다른 빌드는 Run custom build → Dependencies에서 선택
+        artifacts(Package) {
+            buildRule = lastSuccessful("main")
+            cleanDestination = true
+            artifactRules = "apk/** => apk"
         }
     }
 

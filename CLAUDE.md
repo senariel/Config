@@ -356,6 +356,10 @@ UBA executor가 Horde에 `GET http://<server>:13340/api/v1/server/auth`로 인�
 | Server | LMCore | LordMaker `Core/**`·`Source/LMCore/**` 변경 | vcvars64 → CMake/Ninja → ctest(`PYTHONUTF8=1`), 아티팩트 `lmcore*.pyd` |
 | Server | Server Tests | LordMakerServer 모든 브랜치 | LMCore main `.pyd` + `LORDMAKER_FIXTURES` → pytest(JUnit) |
 | Server | Static Data Drift | 매일 03:30 | 서버 `tools/check_static_drift.py` (0 일치 / 1 드리프트 / 2 체크아웃 문제) |
+| Device | Register Device | 수동 (기기당 1회) | 휴대폰 무선 디버깅 페어링 IP:포트·6자리 코드로 `adb pair` (키는 에이전트 adb에 영구 저장) |
+| Device | Deploy to Device | 수동 | Package main APK 설치 → `UECommandLine.txt`(스테이징 기본 명령줄 + `-LMDeviceId=lmtest-<모델>-<시리얼해시8>`) push·재검증 → (옵션) 실행 후 logcat 로그인 ID 확인 |
+
+- **Device 실계정 보호(★)**: Android는 외부 `UECommandLine.txt`가 명령줄 전체를 교체하고, 파일이 없으면 플랫폼 ID로 로그인한다 → 실계정('몽미')이 있는 기기에서 파일 없이 실행하면 실계정 로그인. Deploy는 push·검증 실패 기기에서 앱을 절대 실행하지 않고, logcat에 `lmtest-` 아닌 deviceId가 보이면 강제 종료·실패. 게임 쪽 전제: `bPackageDataInsideApk=True`, `bUseExternalFilesDir=True`, `-LMDeviceId` 지원(비Shipping).
 
 - 공통 파라미터(프로젝트 레벨): `env.UE5_ENGINE_ROOT`, `env.LM_PYTHON`(`C:\Program Files\Python314\python.exe` — **모든 사용자 설치** 필요, LocalSystem 에이전트), `env.VCVARS64`.
 - 서버 배포·재시작은 넣지 않음(서버 세션이 버전 동기·.pyd 교체·DB와 묶어 수동 관리). Device(테스트 기기)·Shipping은 미구현.
@@ -412,5 +416,5 @@ CLAUDE.md               ← 이 파일
 - [ ] Build Editor 앞단에 Horde 헬스체크 (`curl http://localhost:PORT/api/v1/server/info`)
 - [ ] Build Editor 아티팩트로 `.modules` + DLL 해시 publish (모듈 로딩 디버깅용)
 - [ ] 주간 정기 트리거 — `CleanMode=FullRebuild` 강제로 누적 쓰레기 정리
-- [ ] LordMaker Device(테스트 기기 등록·설치) — 기기 OS·연결 방식·단일 APK 여부 결정 후
+- [ ] LordMaker Device 실기기 검증 — 게임 저장소의 단일 APK·외부 명령줄 경로·-LMDeviceId 변경 머지 후
 - [ ] 에이전트 추가 — 브랜치 푸시마다 3개 빌드가 Agent_Win64 하나에 몰림(Package 수 시간 중엔 대기)
