@@ -610,9 +610,10 @@ object LordMakerVcs : GitVcsRoot({
     branchSpec = "refs/heads/*"
     // ClaudeBridge(에디터 전용, private) 서브모듈은 패키징에 불필요 → 체크아웃 안 함
     checkoutSubmodules = GitVcsRoot.CheckoutSubmodules.IGNORE
+    // 엔진용 토큰은 LordMaker 접근 불가(Repository not found) → DevPubApp으로 LordMaker용 토큰을 따로 발급
     authMethod = token {
         userName = "oauth2"
-        tokenId = "tc_token_id:CID_3ab2f5c96314802c7074714f2b03c3a5:-1:62ad1ec8-56b9-4b2a-adce-68a33ee027a2"
+        tokenId = "tc_token_id:CID_3ab2f5c96314802c7074714f2b03c3a5:-1:61fab572-6823-4a57-910f-827976630910"
     }
 })
 
