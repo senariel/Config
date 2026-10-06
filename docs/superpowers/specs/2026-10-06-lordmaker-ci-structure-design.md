@@ -59,6 +59,7 @@ DevPub / LordMaker                (VCS 루트: GameVcs = senariel/LordMaker, Ser
 ### Server / LMCore
 - GameVcs, 트리거 경로 필터 `+:Core/**`, `+:Source/LMCore/**`, 모든 브랜치.
 - VS BuildTools 환경(vcvars64)에서 `cmake -S Core -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPython_EXECUTABLE=<py3.14.5>` → `cmake --build build` → `ctest --test-dir build --output-on-failure` (`PYTHONUTF8=1` 필수 — cp949 콘솔 UnicodeEncodeError).
+- MSVC 버전: vcvars64는 에이전트의 최신 툴셋(현재 14.51.36231)을 고른다. UE는 14.50.35717이지만 **고정하지 않는다** — UE ↔ 코어 비트 등가는 컴파일러 버전이 아니라 ctest의 `lmcore_python_tests` 골든 대조(UE 산출 픽스처)가 지키며, 서버 라이브 .pyd도 14.51 빌드다. 규칙: 골든 대조가 통과하는 한 혼용 수용. **골든 불일치가 나면 1차 조치 = `call vcvars64.bat -vcvars_ver=14.50`으로 고정**(서버 세션 합의, 2026-10-06).
 - 산출물: `lmcore.cp314-win_amd64.pyd`.
 - 전제: 에이전트에 **Python 3.14.5**(모든 사용자 설치, dev headers 포함). CMake ≥ 3.20·Ninja는 VS BuildTools 번들 사용(없으면 설치 필요 — 첫 빌드에서 확인).
 
