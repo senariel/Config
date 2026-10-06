@@ -72,7 +72,7 @@ DevPub / LordMaker                (VCS 루트: GameVcs = senariel/LordMaker, Ser
 
 ### Server / Static Data Drift
 - 스케줄 트리거(매일 03:30), GameVcs main + ServerVcs main.
-- 비교 로직은 **서버 저장소 스크립트**를 CI가 실행만 한다: `python tools/check_static_drift.py --client <LordMaker 체크아웃> --server <서버 체크아웃>` (표준 라이브러리만, 불일치·상수 추출 실패 시 exit 1 + 차이 목록 stdout). 검사 = 클라 `Content/Data/*.xml` ↔ 서버 `data/static/*` 개행 정규화 sha256, RulesVersion(클라 `Source/LMCore/Public/lmcore/Simulation.h` ↔ 서버 `app/main.py`), StaticDataVersion(클라 `Source/LordMaker/Public/Combat/LMSiegeInfo.h` ↔ 서버).
+- 비교 로직은 **서버 저장소 스크립트**를 CI가 실행만 한다: `python tools/check_static_drift.py --client <LordMaker 체크아웃> --server <서버 체크아웃>` (표준 라이브러리만, 종료 코드 0=일치 / 1=드리프트(차이 목록 stdout, 상수 추출 실패 포함) / 2=체크아웃·경로 문제(예: 클라 XML 0개 — 부분 체크아웃 규칙 깨짐). 서버 `6f6b659`부터). 검사 = 클라 `Content/Data/*.xml` ↔ 서버 `data/static/*` 개행 정규화 sha256, RulesVersion(클라 `Source/LMCore/Public/lmcore/Simulation.h` ↔ 서버 `app/main.py`), StaticDataVersion(클라 `Source/LordMaker/Public/Combat/LMSiegeInfo.h` ↔ 서버).
 - GameVcs 체크아웃 규칙(→ `client/`): `+:Content/Data`, `+:Source/LMCore/Public/lmcore/Simulation.h`, `+:Source/LordMaker/Public/Combat/LMSiegeInfo.h` — LFS 대상 아님, 전체 체크아웃 불필요. ServerVcs → `server/`.
 - env `PYTHONUTF8=1`.
 
