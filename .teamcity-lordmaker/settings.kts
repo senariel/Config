@@ -744,6 +744,12 @@ if (${'$'}r -match 'protocol fault') {
 }
 if (${'$'}r -notmatch 'Successfully paired') {
     Show-AdbServerLog
+    ${'$'}tail = Get-Content (Join-Path ${'$'}env:TEMP 'adb.log') -Tail 5 -ErrorAction SilentlyContinue | Out-String
+    if (${'$'}tail -match 'Handshake failed') {
+        # 연결은 됐는데 TLS 핸드셰이크 즉시 실패 = 페어링 서비스가 아닌 포트(무선 디버깅 메인 화면의 연결 포트)일 가능성이 큼
+        Write-Host "##teamcity[buildProblem description='Pairing TLS handshake failed - use the IP:port shown inside the Pair device with pairing code popup, not the main Wireless debugging screen']"
+        exit 1
+    }
     Write-Host "##teamcity[buildProblem description='adb pair failed - code expired (1-2 min), wrong address, or phone on another subnet']"
     exit 1
 }
