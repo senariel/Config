@@ -343,6 +343,15 @@ UBA executor가 Horde에 `GET http://<server>:13340/api/v1/server/auth`로 인�
 
 해결: 위 "에이전트 준비" 3번처럼 **Machine 범위로 승격 후 에이전트 재시작**. 에이전트는 env를 시작 시에만 읽으므로 재시작 필수. SDK 경로가 사용자 폴더(`C:\Users\<user>\AppData\Local\Android\Sdk`)여도 LocalSystem은 읽을 수 있어 그대로 사용 가능.
 
+## LordMaker 패키징 (`DevPub / UnrealEngine5 / LordMaker / Package`)
+
+- 게임 저장소 `senariel/LordMaker`(main, Git LFS). 설치형 엔진 `D:\Shared\UE5`(Build Editor 산출물)로 `RunUAT BuildCookRun`. Agent_Win64 고정, **수동 실행**.
+- 파라미터: `Platforms`(Win64+Android / Win64 / Android), `ClientConfig`(Development만 — 설치형 엔진이 `GameConfigurations=Development`로 빌드됨. Shipping은 엔진 재빌드 필요), `LMServerUrl`.
+- 서버 주소: 게임 코드 수정 없이 작업 사본의 `Config/<Platform>/<Platform>Engine.ini`에 `[ConsoleVariables] LM.Server.Url=...`를 주입(커밋 안 함). `LM.Server.Url`은 ECVF_Default cvar라 ini로 덮어써짐.
+- Android는 `-cookflavor=ASTC` 고정. 산출물은 빌드 아티팩트(Win64 zip, Android zip(APK+OBB+설치 스크립트), `apk/*.apk`).
+- 서브모듈 `Plugins/ClaudeBridge`(에디터 전용, private)는 체크아웃 안 함. 체크아웃 폴더는 `LordMakerPkg` — 루트의 옛 UI 구성(`LordMaker_LordMaker`, 폴더 `LordMaker`)과 겹치지 않게 분리. 옛 구성은 2026-10-06 일시 정지, 새 구성 안정화 후 삭제 예정.
+- 게임 코드의 Android 전용 컴파일 오류(clang `-Werror`: 주석 안 `/*`, `int64`(long long) vs `int64_t`(long))는 MSVC에선 안 보임 → Android 빌드로만 잡힘.
+
 ## 파일 구조
 
 ```
@@ -367,6 +376,7 @@ CLAUDE.md               ← 이 파일
 - 2026-07~09 (UI에서 변경 → `.teamcity/patches/`로 저장돼 있던 것, 2026-10에 settings.kts로 병합 후 patches 삭제): Build Editor에 `ArchiveBuild`(zip 보관) 체크박스, BuildConfiguration.xml 머지에 `MaxLinkActions=1`(링크 동시 1개로 OOM 완화)·Horde `MaxIdle=60`·deprecated `bAllowUBALocalExecutor`/잘못된 `UBAAccelerator` 노드 제거, **빌드 성공 후 `Engine\Intermediate\Build`·UAT 로그 삭제**(디스크 절약 — 대신 다음 빌드의 증분 캐시가 사라짐), Fetch Source의 GitDependencies `--force` 제거, perfmon 활성화, 프로젝트 정리 규칙(10일 보관).
 - 2026-10: **Android 타깃 추가** — `WithAndroid` 체크박스(기본 on) + `-set:WithAndroid` + SDK 사전 점검(fail-fast). Build Editor/Fetch Source를 `Agent_Win64`에 이름 고정(새 에이전트 MAGI_Main 배정 방지). 함정 #17(SetupAndroid.bat의 User 범위 env).
 - 2026-10 (2차): `ArchiveBuild` zip을 배포 폴더 밖 `UE5_ARCHIVE_PATH`로 이동 + `ArchiveKeepCount` 보관 개수 제한 + 실패 시 기존 zip 보존. (배포 폴더 안에 만들면 다음 빌드의 robocopy /MIR이 지우던 문제.)
+- 2026-10 (3차): **LordMaker 패키징 구성** 추가(Win64+Android Development, 서버 주소 ini 주입, 아티팩트 게시). 루트에 UI로 만들어져 있던 `LordMaker / Build Android`(모든 브랜치 VCS 트리거)는 일시 정지 — 서버 재부팅 때 밀린 브랜치 빌드가 Agent_Win64를 몇 시간씩 점유하던 문제.
 
 ## 다음에 할 만한 것 (TODO 후보)
 
@@ -374,4 +384,5 @@ CLAUDE.md               ← 이 파일
 - [ ] Build Editor 앞단에 Horde 헬스체크 (`curl http://localhost:PORT/api/v1/server/info`)
 - [ ] Build Editor 아티팩트로 `.modules` + DLL 해시 publish (모듈 로딩 디버깅용)
 - [ ] 주간 정기 트리거 — `CleanMode=FullRebuild` 강제로 누적 쓰레기 정리
-- [ ] LordMaker 게임 프로젝트도 DevPub 아래로 통합 (현재는 root 직속)
+- [ ] LordMaker 옛 UI 구성(root 직속 `LordMaker_LordMaker`) 삭제 — 새 Package 구성 안정화 후
+- [ ] LordMaker 브랜치별 자동 Android 컴파일 검증이 필요하면 Package와 별도의 가벼운 구성(-build만)으로
