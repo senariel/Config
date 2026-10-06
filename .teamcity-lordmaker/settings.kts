@@ -859,7 +859,7 @@ function Get-OnlineDevices {
 }
 
 # --- Deploy to Device: 설치 → 테스트 DeviceId 명령줄 주입·검증 → (옵션) 실행·로그인 ID 확인 ---
-# ★ 실계정 보호: 명령줄 파일 push·검증이 실패한 기기에서는 절대 앱을 실행하지 않는다
+# 명령줄 파일 push·검증이 실패한 기기에서는 앱을 실행하지 않는다 (테스트 계정이 아닌 새 게스트 계정이 생기는 것 방지)
 ${'$'}pkg       = 'com.devpub.lordmaker'
 ${'$'}remoteDir = "/sdcard/Android/data/${'$'}pkg/files/UnrealGame/LordMaker"
 ${'$'}filter    = '%DeviceFilter%'.Trim()
@@ -934,7 +934,7 @@ foreach (${'$'}d in ${'$'}devices) {
         } else {
             ${'$'}null = Invoke-Adb @('-s', ${'$'}s, 'shell', 'am', 'force-stop', ${'$'}pkg)
             ${'$'}ok = ${'$'}false
-            Write-Host '>> ★ 테스트가 아닌 deviceId로 로그인 시도 감지 - 앱 강제 종료'
+            Write-Host ('>> 테스트 DeviceId 주입 실패 - lmtest- 아닌 deviceId로 로그인: ' + (${'$'}realIds -join ', ') + ' → 앱 강제 종료')
         }
     }
 

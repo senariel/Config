@@ -359,7 +359,7 @@ UBA executor가 Horde에 `GET http://<server>:13340/api/v1/server/auth`로 인�
 | Device | Register Device | 수동 (기기당 1회) | 휴대폰 무선 디버깅 페어링 IP:포트·6자리 코드로 `adb pair` (키는 에이전트 adb에 영구 저장) |
 | Device | Deploy to Device | 수동 | Package main APK 설치 → `UECommandLine.txt`(스테이징 기본 명령줄 + `-LMDeviceId=lmtest-<모델>-<시리얼해시8>`) push·재검증 → (옵션) 실행 후 logcat 로그인 ID 확인 |
 
-- **Device 실계정 보호(★)**: Android는 외부 `UECommandLine.txt`가 명령줄 전체를 교체하고, 파일이 없으면 플랫폼 ID로 로그인한다 → 실계정('몽미')이 있는 기기에서 파일 없이 실행하면 실계정 로그인. Deploy는 push·검증 실패 기기에서 앱을 절대 실행하지 않고, logcat에 `lmtest-` 아닌 deviceId가 보이면 강제 종료·실패. 게임 쪽 전제: `bPackageDataInsideApk=True`, `bUseExternalFilesDir=True`, `-LMDeviceId` 지원(비Shipping).
+- **Device 테스트 DeviceId**: Android는 외부 `UECommandLine.txt`가 명령줄 전체를 교체한다. 파일이 없으면 `FPlatformMisc::GetLoginId()` = 설치마다 무작위 GUID라 **새 게스트 계정**이 생길 뿐 실계정과 겹치지 않는다(2026-10-06 정정 — 처음엔 실계정 로그인 위험으로 잘못 판단). `-LMDeviceId`의 목적은 ① 재설치·데이터 삭제 후에도 같은 테스트 계정 유지(없으면 고아 계정 누적) ② `lmtest-` 접두로 테스트 계정 식별·정리. Deploy는 push·검증 실패 기기에서 앱을 실행하지 않고, logcat에 `lmtest-` 아닌 deviceId가 보이면 주입 실패로 보고 강제 종료·실패 처리. 게임 쪽 전제: `bPackageDataInsideApk=True`, `bUseExternalFilesDir=True`, `-LMDeviceId` 지원(비Shipping).
 
 - 공통 파라미터(프로젝트 레벨): `env.UE5_ENGINE_ROOT`, `env.LM_PYTHON`(`C:\Program Files\Python314\python.exe` — **모든 사용자 설치** 필요, LocalSystem 에이전트), `env.VCVARS64`.
 - 서버 배포·재시작은 넣지 않음(서버 세션이 버전 동기·.pyd 교체·DB와 묶어 수동 관리). Device(테스트 기기)·Shipping은 미구현.

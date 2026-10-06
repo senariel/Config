@@ -110,9 +110,10 @@ DevPub / LordMaker                (VCS 루트: GameVcs = senariel/LordMaker, Ser
   6. (`LaunchAfterInstall`일 때만) `adb shell monkey -p com.devpub.lordmaker 1` 실행 후 logcat에서 `deviceId=lmtest-` 확인(최대 60초) — 실계정 ID가 보이면 즉시 `am force-stop` 후 실패.
 - 연결된 대상 기기가 0대면 원인(무선 디버깅 꺼짐/다른 서브넷/미등록)을 buildProblem으로 표시하고 실패.
 
-### 실계정 보호 (★)
+### 테스트 계정 (정정 2026-10-06)
 - 테스트 계정 식별 규약 = `lmtest-` 접두(서버 기록 a552f80). 서버는 deviceId에 형식 제약 없음, S3 실배포 때 서버가 테스트 접두 가드 구현 예정.
-- 위험: 실계정('몽미')이 있는 실기기에서 `UECommandLine.txt` 없이(앱 데이터/앱 삭제 후 포함) 앱을 실행하면 플랫폼 ID로 실계정 로그인. → CI는 push·검증 실패 시 실행 금지. 사용자는 CI 재배포 전 앱 수동 실행 금지, 가능하면 실계정 없는 테스트 전용 기기 사용.
+- ~~위험: 파일 없이 실행하면 실계정 로그인~~ → **정정**: Android `FPlatformMisc::GetLoginId()`는 설치마다 무작위 GUID(내부 저장소 login-identifier.txt)라, 파일이 없어도 새 게스트 계정이 생길 뿐 다른 기기의 실계정과 겹치지 않는다.
+- `-LMDeviceId`의 목적: ① 재설치·데이터 삭제 후에도 같은 테스트 계정 유지(없으면 재설치마다 고아 계정 누적) ② `lmtest-` 접두로 식별·정리. logcat 검사는 보호 장치가 아니라 **주입 성공 확인** 용도(실패 시 강제 종료·실패 처리는 유지).
 
 ### 선행 조건
 - 휴대폰과 AYA-ZZANG이 같은 서브넷, Android 11+(무선 디버깅), 개발자 옵션의 무선 디버깅 켜짐.
