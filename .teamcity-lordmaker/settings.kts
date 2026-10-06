@@ -30,6 +30,9 @@ project {
 
     params {
         param("env.UE5_ENGINE_ROOT", """D:\Shared\UE5""")
+        // 패키지 최신본(항상 1개, 매 빌드 교체)과 선택적 zip 보관 위치 — 아카이브는 배포 폴더 밖이어야 함(robocopy /MIR)
+        param("env.LM_DIST_PATH", """D:\Shared\LordMaker""")
+        param("env.LM_ARCHIVE_PATH", """D:\Shared\LordMaker_Archives""")
         param("env.LM_PYTHON", """C:\Program Files\Python314\python.exe""")
         param("env.VCVARS64", """C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat""")
     }
@@ -278,18 +281,15 @@ Write-Host (">> Core Gates OK: " + ${'$'}sums.Count + " runs, baseline DIFF " + 
 
 object Package : BuildType({
     name = "Package"
-    description = "Win64/Android Development 쿠킹·패키징. main 푸시 자동 + 수동. 산출물은 빌드 아티팩트."
+    description = "Win64/Android Development 쿠킹·패키징. main 푸시 자동 + 수동. 최신본 1개만 D:/Shared/LordMaker/<플랫폼>에 교체, ArchiveBuild 체크 시에만 zip 보관."
 
-    // -archivedirectory를 플랫폼별(Archive/Win64, Archive/Android)로 직접 지정하므로 경로가 고정됨.
-    // 스테이징 UECommandLine.txt = Deploy to Device가 테스트 DeviceId를 붙일 기본 명령줄
-    artifactRules = """
-        Archive/Win64 => LordMaker-Win64-%ClientConfig%.zip
-        Archive/Android => LordMaker-Android-%ClientConfig%.zip
-        Archive/Android/*.apk => apk
-        Saved/StagedBuilds/Android*/UECommandLine.txt => apk
-    """.trimIndent()
+    // TeamCity 아티팩트로는 게시하지 않는다(빌드마다 서버에 쌓임 — 디스크 여유 부족).
+    // 산출물: LM_DIST_PATH\Win64, LM_DIST_PATH\Android(APK + 기본 명령줄 UECommandLine.txt + BUILD_INFO.txt)
 
     params {
+        checkbox("ArchiveBuild", "false", label = "빌드 아카이빙 (Zip)",
+                description = "체크하면 이번 결과를 D:/Shared/LordMaker_Archives에 zip으로 따로 보관(자동 삭제 안 함). 기본은 최신본 1개만 유지",
+                checked = "true", unchecked = "false")
         select("Platforms", "Win64+Android", label = "패키징 플랫폼",
                 options = listOf("Win64 + Android" to "Win64+Android", "Win64" to "Win64", "Android" to "Android"))
         // 설치형 엔진이 GameConfigurations=Development만 포함 → Shipping은 엔진 재빌드 후 추가
@@ -342,6 +342,65 @@ foreach (${'$'}p in @('Windows', 'Android')) {
     Write-Host ">> ${'$'}rel : LM.Server.Url=${'$'}url"
 }
 
+# 배포: 최신 1개만 유지 (TeamCity 아티팩트로 쌓지 않음 — 디스크 여유 부족)
+#   LM_DIST_PATH\<plat>   = 최신 빌드 (robocopy /MIR로 교체, 실패한 플랫폼은 이전 것 유지)
+#   LM_ARCHIVE_PATH       = ArchiveBuild 체크 시에만 zip 보관 (자동 삭제 안 함)
+${'$'}distRoot    = ${'$'}env:LM_DIST_PATH
+${'$'}archiveRoot = ${'$'}env:LM_ARCHIVE_PATH
+${'$'}doArchive   = '%ArchiveBuild%' -eq 'true'
+${'$'}distFull    = [IO.Path]::GetFullPath(${'$'}distRoot).TrimEnd('\') + '\'      # 끝에 구분자 — LordMaker_Archives가 LordMaker로 오판되지 않게
+${'$'}archiveFull = [IO.Path]::GetFullPath(${'$'}archiveRoot).TrimEnd('\') + '\'
+if (${'$'}doArchive -and ${'$'}archiveFull.StartsWith(${'$'}distFull, [StringComparison]::OrdinalIgnoreCase)) {
+    # 배포 폴더 안이면 다음 빌드의 robocopy /MIR이 지워 버림 (엔진 쪽과 같은 함정)
+    Write-Host "##teamcity[buildProblem description='LM_ARCHIVE_PATH must not be inside LM_DIST_PATH']"; exit 1
+}
+
+function Publish-Platform([string]${'$'}plat, [string]${'$'}src) {
+    if (-not (Test-Path ${'$'}src)) { Write-Host "##teamcity[buildProblem description='${'$'}plat archive folder missing: ${'$'}src']"; return ${'$'}false }
+    if (${'$'}plat -eq 'Android') {
+        # Deploy to Device가 테스트 DeviceId를 붙일 기본 명령줄 (스테이징 원본)
+        ${'$'}cmd = Get-ChildItem (Join-Path (Get-Location) 'Saved\StagedBuilds') -Directory -Filter 'Android*' -ErrorAction SilentlyContinue |
+               ForEach-Object { Join-Path ${'$'}_.FullName 'UECommandLine.txt' } | Where-Object { Test-Path ${'$'}_ } | Select-Object -First 1
+        if (${'$'}cmd) { Copy-Item ${'$'}cmd (Join-Path ${'$'}src 'UECommandLine.txt') -Force }
+        else { Write-Host "##teamcity[message text='Staged Android UECommandLine.txt not found' status='WARNING']" }
+    }
+    ${'$'}info = @(
+        "build=%build.number%", "revision=%build.vcs.number%", "branch=%teamcity.build.branch%",
+        "config=%ClientConfig%", "platform=${'$'}plat", "serverUrl=%LMServerUrl%", ("date=" + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+    )
+    Set-Content -Path (Join-Path ${'$'}src 'BUILD_INFO.txt') -Value ${'$'}info -Encoding UTF8
+
+    ${'$'}dest = Join-Path ${'$'}distRoot ${'$'}plat
+    New-Item ${'$'}dest -ItemType Directory -Force | Out-Null
+    ${'$'}p = Start-Process robocopy.exe -ArgumentList "`"${'$'}src`" `"${'$'}dest`" /MIR /R:2 /W:5 /NFL /NDL /NP /NJH" -PassThru -NoNewWindow
+    ${'$'}null = ${'$'}p.Handle   # 핸들 캐싱 (종료 후 ExitCode null 방지)
+    ${'$'}p.WaitForExit()
+    ${'$'}rcCopy = ${'$'}p.ExitCode
+    if (${'$'}null -eq ${'$'}rcCopy) { ${'$'}rcCopy = 0 }
+    if (${'$'}rcCopy -ge 8) { Write-Host "##teamcity[buildProblem description='robocopy to ${'$'}dest failed (exit ${'$'}rcCopy)']"; return ${'$'}false }
+    Write-Host (">> " + ${'$'}plat + " -> " + ${'$'}dest + " (robocopy " + ${'$'}rcCopy + ")")
+    Get-ChildItem ${'$'}dest | ForEach-Object { Write-Host ("   " + ${'$'}_.Name) }
+
+    if (${'$'}doArchive) {
+        New-Item ${'$'}archiveRoot -ItemType Directory -Force | Out-Null
+        ${'$'}zip = Join-Path ${'$'}archiveRoot ("LordMaker_" + ${'$'}plat + "_%ClientConfig%_%build.number%_" + (Get-Date -Format 'yyyyMMdd-HHmm') + ".zip")
+        ${'$'}sevenZip = (Get-Command '7z.exe' -ErrorAction SilentlyContinue).Source
+        if (-not ${'$'}sevenZip -and (Test-Path "${'$'}env:ProgramFiles\7-Zip\7z.exe")) { ${'$'}sevenZip = "${'$'}env:ProgramFiles\7-Zip\7z.exe" }
+        ${'$'}zipOk = ${'$'}false
+        if (${'$'}sevenZip) { & ${'$'}sevenZip a -tzip -mx=1 "${'$'}zip" "${'$'}dest\*" | Out-Null; ${'$'}zipOk = (${'$'}LASTEXITCODE -le 1) }
+        else { try { Compress-Archive -Path "${'$'}dest\*" -DestinationPath ${'$'}zip -Force -ErrorAction Stop; ${'$'}zipOk = ${'$'}true } catch { Write-Host (">> Compress-Archive 실패: " + ${'$'}_) } }
+        if (${'$'}zipOk) { Write-Host (">> archived: " + ${'$'}zip) }
+        else { Write-Host "##teamcity[buildProblem description='Archiving ${'$'}plat failed (latest copy in ${'$'}dest is fine)']" }
+    }
+
+    # 에이전트 작업 폴더의 중간 사본 정리 (Archive, 스테이징) — 배포 폴더에 한 벌만 남김
+    Remove-Item ${'$'}src -Recurse -Force -ErrorAction SilentlyContinue
+    Get-ChildItem (Join-Path (Get-Location) 'Saved\StagedBuilds') -Directory -ErrorAction SilentlyContinue |
+        Where-Object { ${'$'}_.Name -like (${'$'}(if (${'$'}plat -eq 'Win64') { 'Windows*' } else { 'Android*' })) } |
+        ForEach-Object { Remove-Item ${'$'}_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    return ${'$'}true
+}
+
 # 2) 플랫폼별 BuildCookRun (한 플랫폼이 실패해도 나머지는 진행)
 if (Test-Path ${'$'}archive) { Remove-Item ${'$'}archive -Recurse -Force }
 ${'$'}failed = @()
@@ -359,9 +418,9 @@ foreach (${'$'}plat in ('%Platforms%' -split '\+')) {
     ${'$'}rc = ${'$'}proc.ExitCode
     if (${'$'}null -eq ${'$'}rc) { ${'$'}rc = 0 }
     Write-Host "##teamcity[blockClosed name='BuildCookRun ${'$'}plat']"
-    if (${'$'}rc -ne 0) { ${'$'}failed += ${'$'}plat; Write-Host "##teamcity[buildProblem description='BuildCookRun ${'$'}plat failed (exit ${'$'}rc)' identity='bcr_${'$'}plat']" }
-    else { Write-Host ">> ${'$'}plat OK" }
-    if (Test-Path ${'$'}platArchive) { Get-ChildItem ${'$'}platArchive | ForEach-Object { Write-Host ("   archive/" + ${'$'}plat + "/" + ${'$'}_.Name) } }
+    if (${'$'}rc -ne 0) { ${'$'}failed += ${'$'}plat; Write-Host "##teamcity[buildProblem description='BuildCookRun ${'$'}plat failed (exit ${'$'}rc)' identity='bcr_${'$'}plat']"; continue }
+    Write-Host ">> ${'$'}plat OK"
+    if (-not (Publish-Platform ${'$'}plat ${'$'}platArchive)) { ${'$'}failed += ${'$'}plat }
 }
 if (${'$'}failed.Count -gt 0) { exit 1 }
                 """.trimIndent()
@@ -771,9 +830,12 @@ Write-Host ">> 페어링 완료. 이제 Deploy to Device로 설치할 수 있습
 
 object DeployToDevice : BuildType({
     name = "Deploy to Device"
-    description = "Package APK 설치 + 테스트 DeviceId(lmtest-<모델>-<시리얼해시8>) 명령줄 주입·검증. 검증 실패 기기는 앱 실행 금지(실계정 보호)."
+    description = "Package 최신 APK(D:/Shared/LordMaker/Android) 설치 + 테스트 DeviceId(lmtest-<모델>-<시리얼해시8>) 명령줄 주입·검증. 검증 실패 기기는 앱 실행 안 함."
 
     params {
+        text("ApkDir", "", label = "APK 폴더 (선택)",
+                description = "비우면 Package 최신본 D:/Shared/LordMaker/Android. 아카이브를 풀어 둔 폴더 등 다른 빌드를 설치할 때 지정",
+                display = ParameterDisplay.NORMAL, allowEmpty = true)
         text("DeviceFilter", "", label = "대상 기기 필터",
                 description = "모델명 또는 시리얼 일부. 비우면 연결된 테스트 기기 전부",
                 display = ParameterDisplay.NORMAL, allowEmpty = true)
@@ -865,17 +927,22 @@ ${'$'}remoteDir = "/sdcard/Android/data/${'$'}pkg/files/UnrealGame/LordMaker"
 ${'$'}filter    = '%DeviceFilter%'.Trim()
 ${'$'}launch    = '%LaunchAfterInstall%' -eq 'true'
 
-${'$'}apk = Get-ChildItem 'apk' -Filter '*.apk' -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not ${'$'}apk) { Write-Host "##teamcity[buildProblem description='No APK in the Package artifact (apk/*.apk)']"; exit 1 }
-Write-Host (">> APK: " + ${'$'}apk.Name + " (" + [math]::Round(${'$'}apk.Length / 1MB, 1) + " MB)")
+# APK 위치 = Package가 교체해 두는 최신 배포 폴더(LM_DIST_PATH\Android). 다른 폴더(풀어 둔 아카이브 등)는 ApkDir로 지정
+${'$'}apkDir = '%ApkDir%'.Trim()
+if (-not ${'$'}apkDir) { ${'$'}apkDir = Join-Path ${'$'}env:LM_DIST_PATH 'Android' }
+${'$'}apk = Get-ChildItem ${'$'}apkDir -Filter '*.apk' -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not ${'$'}apk) { Write-Host "##teamcity[buildProblem description='No APK in ${'$'}apkDir - run Package (Android) first']"; exit 1 }
+Write-Host (">> APK: " + ${'$'}apk.FullName + " (" + [math]::Round(${'$'}apk.Length / 1MB, 1) + " MB)")
+${'$'}infoFile = Join-Path ${'$'}apkDir 'BUILD_INFO.txt'
+if (Test-Path ${'$'}infoFile) { Get-Content ${'$'}infoFile | ForEach-Object { Write-Host ("   " + ${'$'}_) } }
 
-# 기본 명령줄 = Package가 게시한 스테이징 UECommandLine.txt (외부 파일이 명령줄 전체를 '교체'하므로 반드시 포함)
-${'$'}baseFile = Join-Path 'apk' 'UECommandLine.txt'
+# 기본 명령줄 = Package가 같이 둔 스테이징 UECommandLine.txt (외부 파일이 명령줄 전체를 '교체'하므로 반드시 포함)
+${'$'}baseFile = Join-Path ${'$'}apkDir 'UECommandLine.txt'
 if (Test-Path ${'$'}baseFile) {
     ${'$'}baseCmd = (Get-Content ${'$'}baseFile -TotalCount 1).Trim()
 } else {
     ${'$'}baseCmd = '../../../LordMaker/LordMaker.uproject'
-    Write-Host "##teamcity[message text='apk/UECommandLine.txt not in artifact - using default base command line' status='WARNING']"
+    Write-Host "##teamcity[message text='UECommandLine.txt not next to the APK - using default base command line' status='WARNING']"
 }
 Write-Host (">> base command line: " + ${'$'}baseCmd)
 
@@ -945,15 +1012,6 @@ if (${'$'}failed.Count -gt 0) { exit 1 }
 Write-Host (">> 배포 완료: " + ${'$'}devices.Count + "대")
                 """.trimIndent()
             }
-        }
-    }
-
-    dependencies {
-        // 기본 = Package 마지막 성공 main. 다른 빌드는 Run custom build → Dependencies에서 선택
-        artifacts(Package) {
-            buildRule = lastSuccessful("main")
-            cleanDestination = true
-            artifactRules = "apk/** => apk"
         }
     }
 

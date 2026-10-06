@@ -352,12 +352,12 @@ UBA executor가 Horde에 `GET http://<server>:13340/api/v1/server/auth`로 인�
 | Client | Editor Build | Core Gates 체인 | `Build.bat LordMakerEditor Win64 Development` (컴파일만) |
 | Client | Android Compile | 모든 브랜치 푸시 | `Build.bat LordMaker Android Development` (쿡 없음) |
 | Client | Core Gates | 모든 브랜치 푸시 (Editor Build 스냅샷 의존, 같은 체크아웃 폴더 `LordMakerCI`) | `Tools/core_gates.sh`. exit≠0 실패, 마지막 성공 main `gates.zip` 대비 DIFF는 경고 |
-| Client | Package | main 푸시 + 수동 | BuildCookRun (아래) |
+| Client | Package | main 푸시 + 수동 | BuildCookRun → **최신본 1개만** `D:\Shared\LordMaker\<Win64|Android>`에 robocopy /MIR 교체(TeamCity 아티팩트로 게시 안 함 — 서버 디스크 여유 부족). `ArchiveBuild` 체크 시에만 `D:\Shared\LordMaker_Archives`에 zip(자동 삭제 없음). 작업 폴더의 Archive·StagedBuilds 사본은 배포 후 삭제 |
 | Server | LMCore | LordMaker `Core/**`·`Source/LMCore/**` 변경 | vcvars64 → CMake/Ninja → ctest(`PYTHONUTF8=1`), 아티팩트 `lmcore*.pyd` |
 | Server | Server Tests | LordMakerServer 모든 브랜치 | LMCore main `.pyd` + `LORDMAKER_FIXTURES` → pytest(JUnit) |
 | Server | Static Data Drift | 매일 03:30 | 서버 `tools/check_static_drift.py` (0 일치 / 1 드리프트 / 2 체크아웃 문제) |
 | Device | Register Device | 수동 (기기당 1회) | 휴대폰 무선 디버깅 페어링 IP:포트·6자리 코드로 `adb pair` (키는 에이전트 adb에 영구 저장) |
-| Device | Deploy to Device | 수동 | Package main APK 설치 → `UECommandLine.txt`(스테이징 기본 명령줄 + `-LMDeviceId=lmtest-<모델>-<시리얼해시8>`) push·재검증 → (옵션) 실행 후 logcat 로그인 ID 확인 |
+| Device | Deploy to Device | 수동 | `D:\Shared\LordMaker\Android`(또는 `ApkDir`)의 APK 설치 → `UECommandLine.txt`(스테이징 기본 명령줄 + `-LMDeviceId=lmtest-<모델>-<시리얼해시8>`) push·재검증 → (옵션) 실행 후 logcat 로그인 ID 확인 |
 
 - **Device 테스트 DeviceId**: Android는 외부 `UECommandLine.txt`가 명령줄 전체를 교체한다. 파일이 없으면 `FPlatformMisc::GetLoginId()` = 설치마다 무작위 GUID라 **새 게스트 계정**이 생길 뿐 실계정과 겹치지 않는다(2026-10-06 정정 — 처음엔 실계정 로그인 위험으로 잘못 판단). `-LMDeviceId`의 목적은 ① 재설치·데이터 삭제 후에도 같은 테스트 계정 유지(없으면 고아 계정 누적) ② `lmtest-` 접두로 테스트 계정 식별·정리. Deploy는 push·검증 실패 기기에서 앱을 실행하지 않고, logcat에 `lmtest-` 아닌 deviceId가 보이면 주입 실패로 보고 강제 종료·실패 처리. 게임 쪽 전제: `bPackageDataInsideApk=True`, `bUseExternalFilesDir=True`, `-LMDeviceId` 지원(비Shipping).
 
@@ -375,7 +375,7 @@ UBA executor가 Horde에 `GET http://<server>:13340/api/v1/server/auth`로 인�
 - 게임 저장소 `senariel/LordMaker`(main, Git LFS). 설치형 엔진 `D:\Shared\UE5`(Build Editor 산출물)로 `RunUAT BuildCookRun`. Agent_Win64 고정(LordMaker 전 구성 동일).
 - 파라미터: `Platforms`(Win64+Android / Win64 / Android), `ClientConfig`(Development만 — 설치형 엔진이 `GameConfigurations=Development`로 빌드됨. Shipping은 엔진 재빌드 필요), `LMServerUrl`.
 - 서버 주소: 게임 코드 수정 없이 작업 사본의 `Config/<Platform>/<Platform>Engine.ini`에 `[ConsoleVariables] LM.Server.Url=...`를 주입(커밋 안 함). `LM.Server.Url`은 ECVF_Default cvar라 ini로 덮어써짐.
-- Android는 `-cookflavor=ASTC` 고정. 산출물은 빌드 아티팩트(Win64 zip, Android zip(APK+OBB+설치 스크립트), `apk/*.apk`).
+- Android는 `-cookflavor=ASTC` 고정, 단일 APK(`bPackageDataInsideApk=True`). 산출물 위치는 위 표(배포 폴더 1개 + 선택적 zip).
 - 서브모듈 `Plugins/ClaudeBridge`(에디터 전용, private)는 체크아웃 안 함. 체크아웃 폴더는 `LordMakerPkg`.
 - 옛 UI 구성(루트 직속 `LordMaker` 프로젝트의 Build Android·Register Mobile Device·Deploy to Mobile·Build Engine)은 2026-10-06 이 DSL로 대체되며 삭제됨. 프로젝트 ID `LordMaker`는 그대로 재사용.
 - 게임 코드의 Android 전용 컴파일 오류(clang `-Werror`: 주석 안 `/*`, `int64`(long long) vs `int64_t`(long))는 MSVC에선 안 보임 → Android 빌드로만 잡힘.
