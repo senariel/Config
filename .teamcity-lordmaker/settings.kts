@@ -696,7 +696,8 @@ object Device : Project({
 
     buildType(RegisterDevice)
     buildType(DeployToDevice)
-    buildTypesOrder = arrayListOf(RegisterDevice, DeployToDevice)
+    buildType(CollectDeviceLogs)
+    buildTypesOrder = arrayListOf(RegisterDevice, DeployToDevice, CollectDeviceLogs)
 })
 
 object RegisterDevice : BuildType({
@@ -1010,6 +1011,154 @@ foreach (${'$'}d in ${'$'}devices) {
 }
 if (${'$'}failed.Count -gt 0) { exit 1 }
 Write-Host (">> 배포 완료: " + ${'$'}devices.Count + "대")
+                """.trimIndent()
+            }
+        }
+    }
+
+    requirements {
+        equals("teamcity.agent.name", "Agent_Win64")
+    }
+})
+
+object CollectDeviceLogs : BuildType({
+    name = "Collect Device Logs"
+    description = "크래시 직후 실행: 테스트 기기의 logcat(crash/all)·UE 로그(Saved/Logs)·크래시 폴더를 아티팩트 device-logs.zip으로 수집."
+
+    artifactRules = "device-logs => device-logs.zip"
+
+    params {
+        text("DeviceFilter", "", label = "대상 기기 필터",
+                description = "모델명 또는 시리얼 일부. 비우면 연결된 테스트 기기 전부",
+                display = ParameterDisplay.NORMAL, allowEmpty = true)
+        text("ConnectAddress", "", label = "직접 연결 주소 (선택)",
+                description = "mDNS로 기기를 못 찾을 때: 휴대폰 무선 디버깅 화면의 'IP 주소 및 포트'",
+                display = ParameterDisplay.NORMAL, allowEmpty = true)
+    }
+
+    steps {
+        powerShell {
+            name = "Collect logcat + UE logs"
+            id = "Collect"
+            scriptMode = script {
+                content = """
+# --- adb 공통 (Register/Deploy 앞부분에 삽입) ---
+${'$'}ErrorActionPreference = 'Continue'
+${'$'}adb = Join-Path ${'$'}env:ANDROID_HOME 'platform-tools\adb.exe'
+if (-not ${'$'}env:ANDROID_HOME -or -not (Test-Path ${'$'}adb)) { Write-Host "##teamcity[buildProblem description='adb not found under ANDROID_HOME on the agent']"; exit 1 }
+function Invoke-Adb([string[]]${'$'}adbArgs) {
+    # 네이티브 stderr를 문자열로 합쳐 반환 (PS 5.1 ErrorRecord 장식 제거)
+    ${'$'}lines = & ${'$'}adb @adbArgs 2>&1 | ForEach-Object { "${'$'}_" }
+    return (${'$'}lines -join "`n")
+}
+
+function Show-AdbServerLog {
+    # adb 서버는 시작 시점의 TEMP(= 에이전트 buildTmp)에 adb.log를 쓴다
+    ${'$'}log = Join-Path ${'$'}env:TEMP 'adb.log'
+    if (Test-Path ${'$'}log) {
+        Write-Host '>> adb server log (tail):'
+        Get-Content ${'$'}log -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('   ' + ${'$'}_) }
+    }
+}
+
+function Restart-AdbServer {
+    ${'$'}null = Invoke-Adb @('kill-server')
+    Start-Sleep -Seconds 1
+    ${'$'}null = Invoke-Adb @('start-server')
+}
+
+Write-Host ('>> ' + ((Invoke-Adb @('version')) -split "`n" | Select-Object -First 2) -join ' / ')
+${'$'}null = Invoke-Adb @('start-server')
+
+function Connect-WirelessDevices([string]${'$'}manualAddress) {
+    # mDNS로 찾은 무선 디버깅 연결 엔드포인트(_adb-tls-connect)에 연결. 페어링된 기기만 성공한다.
+    ${'$'}svc = Invoke-Adb @('mdns', 'services')
+    ${'$'}found = 0
+    foreach (${'$'}l in (${'$'}svc -split "`n")) {
+        if (${'$'}l -match '_adb-tls-connect\._tcp\.?\s+(\S+:\d+)') {
+            ${'$'}found++
+            ${'$'}r = Invoke-Adb @('connect', ${'$'}Matches[1])
+            Write-Host (">> adb connect " + ${'$'}Matches[1] + " : " + ${'$'}r.Trim())
+        }
+    }
+    if (${'$'}manualAddress) {
+        ${'$'}r = Invoke-Adb @('connect', ${'$'}manualAddress)
+        Write-Host (">> adb connect " + ${'$'}manualAddress + " (수동) : " + ${'$'}r.Trim())
+    }
+    if (${'$'}found -eq 0 -and -not ${'$'}manualAddress) {
+        Write-Host '>> mDNS에서 무선 디버깅 기기를 찾지 못함 (무선 디버깅 꺼짐 / 다른 서브넷 / 방화벽의 mDNS 차단). ConnectAddress로 직접 지정 가능.'
+    }
+    Start-Sleep -Seconds 2
+}
+
+function Get-OnlineDevices {
+    # 같은 기기가 mDNS 이름과 IP:포트 두 줄로 보일 수 있어 ro.serialno로 중복 제거
+    ${'$'}list = @()
+    ${'$'}seen = @{}
+    foreach (${'$'}l in ((Invoke-Adb @('devices', '-l')) -split "`n" | Select-Object -Skip 1)) {
+        if (${'$'}l -notmatch '^(\S+)\s+device\b') { continue }
+        ${'$'}serial = ${'$'}Matches[1]
+        ${'$'}model = 'unknown'
+        if (${'$'}l -match 'model:(\S+)') { ${'$'}model = ${'$'}Matches[1] }
+        ${'$'}hw = (Invoke-Adb @('-s', ${'$'}serial, 'shell', 'getprop', 'ro.serialno')).Trim()
+        if (-not ${'$'}hw) { ${'$'}hw = ${'$'}serial }
+        if (${'$'}seen.ContainsKey(${'$'}hw)) { continue }
+        ${'$'}seen[${'$'}hw] = ${'$'}true
+        ${'$'}list += [pscustomobject]@{ Serial = ${'$'}serial; Model = ${'$'}model; HwSerial = ${'$'}hw }
+    }
+    return ,${'$'}list
+}
+
+# --- Collect Device Logs: 크래시 직후 실행 — logcat(main/crash 버퍼)·UE 로그·크래시 폴더를 아티팩트로 ---
+${'$'}pkg    = 'com.devpub.lordmaker'
+${'$'}ueRoot = "/sdcard/Android/data/${'$'}pkg/files/UnrealGame/LordMaker/LordMaker/Saved"
+${'$'}filter = '%DeviceFilter%'.Trim()
+${'$'}outRoot = Join-Path (Get-Location) 'device-logs'
+if (Test-Path ${'$'}outRoot) { Remove-Item ${'$'}outRoot -Recurse -Force }
+New-Item ${'$'}outRoot -ItemType Directory -Force | Out-Null
+
+${'$'}manualAddress = '%ConnectAddress%'.Trim()
+Connect-WirelessDevices ${'$'}manualAddress
+${'$'}devices = Get-OnlineDevices
+if (${'$'}filter) { ${'$'}devices = @(${'$'}devices | Where-Object { ${'$'}_.Model -like "*${'$'}filter*" -or ${'$'}_.HwSerial -like "*${'$'}filter*" }) }
+if (${'$'}devices.Count -eq 0) { Write-Host "##teamcity[buildProblem description='No connected test device - turn on Wireless debugging']"; exit 1 }
+
+foreach (${'$'}d in ${'$'}devices) {
+    ${'$'}s = ${'$'}d.Serial
+    ${'$'}dir = Join-Path ${'$'}outRoot (${'$'}d.Model + '_' + ${'$'}d.HwSerial)
+    New-Item ${'$'}dir -ItemType Directory -Force | Out-Null
+    Write-Host ">> ${'$'}(${'$'}d.Model) (${'$'}(${'$'}d.HwSerial))"
+
+    # 기기 정보
+    ${'$'}props = foreach (${'$'}p in 'ro.product.model','ro.build.version.release','ro.build.version.sdk','ro.hardware','ro.board.platform','ro.hardware.vulkan','ro.hardware.egl') {
+        "${'$'}p=" + (Invoke-Adb @('-s', ${'$'}s, 'shell', 'getprop', ${'$'}p)).Trim()
+    }
+    # adb shell은 인자를 공백으로 이어 기기 셸에서 실행 → 파이프 기호가 든 패턴은 따옴표로 감싸야 함
+    ${'$'}props += 'app=' + ((Invoke-Adb @('-s', ${'$'}s, 'shell', "dumpsys package ${'$'}pkg | grep -E 'versionName|lastUpdateTime'")) -replace '\s+', ' ').Trim()
+    [IO.File]::WriteAllLines((Join-Path ${'$'}dir 'device.txt'), [string[]]${'$'}props)
+    ${'$'}props | ForEach-Object { Write-Host ('   ' + ${'$'}_) }
+
+    # logcat: 크래시 버퍼(네이티브 tombstone 요약·Java 예외) + 전체 main/system 버퍼(UE 로그 태그 UE 포함)
+    foreach (${'$'}buf in 'crash', 'all') {
+        ${'$'}txt = Invoke-Adb @('-s', ${'$'}s, 'logcat', '-d', '-b', ${'$'}buf, '-v', 'threadtime')
+        [IO.File]::WriteAllText((Join-Path ${'$'}dir "logcat-${'$'}buf.txt"), ${'$'}txt, (New-Object Text.UTF8Encoding ${'$'}false))
+    }
+
+    # UE 로그·크래시 (bUseExternalFilesDir=True → 앱 전용 외부 폴더)
+    foreach (${'$'}sub in 'Logs', 'Crashes') {
+        ${'$'}r = Invoke-Adb @('-s', ${'$'}s, 'pull', "${'$'}ueRoot/${'$'}sub", (Join-Path ${'$'}dir ${'$'}sub))
+        Write-Host ("   pull " + ${'$'}sub + ": " + ((${'$'}r -split "`n") | Select-Object -Last 1))
+    }
+
+    # 콘솔에 핵심만: 치명 오류·네이티브 크래시·UE Fatal
+    ${'$'}crash = Get-Content (Join-Path ${'$'}dir 'logcat-crash.txt') -ErrorAction SilentlyContinue
+    ${'$'}all   = Get-Content (Join-Path ${'$'}dir 'logcat-all.txt') -ErrorAction SilentlyContinue
+    Write-Host '>> logcat crash buffer (tail 60):'
+    ${'$'}crash | Select-Object -Last 60 | ForEach-Object { Write-Host ('   ' + ${'$'}_) }
+    Write-Host '>> UE Fatal/Error lines (last 60):'
+    ${'$'}all | Select-String -Pattern 'Fatal|Assertion failed|Unhandled Exception|SIGSEGV|SIGABRT|signal \d+|LogAndroid.*Error|Error:' | Select-Object -Last 60 | ForEach-Object { Write-Host ('   ' + ${'$'}_.Line) }
+}
+Write-Host ">> 로그는 빌드 아티팩트 device-logs.zip 에 있습니다"
                 """.trimIndent()
             }
         }
