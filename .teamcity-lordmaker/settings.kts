@@ -663,13 +663,29 @@ object RegisterDevice : BuildType({
 ${'$'}ErrorActionPreference = 'Continue'
 ${'$'}adb = Join-Path ${'$'}env:ANDROID_HOME 'platform-tools\adb.exe'
 if (-not ${'$'}env:ANDROID_HOME -or -not (Test-Path ${'$'}adb)) { Write-Host "##teamcity[buildProblem description='adb not found under ANDROID_HOME on the agent']"; exit 1 }
-& ${'$'}adb start-server | Out-Null
-
 function Invoke-Adb([string[]]${'$'}adbArgs) {
     # 네이티브 stderr를 문자열로 합쳐 반환 (PS 5.1 ErrorRecord 장식 제거)
     ${'$'}lines = & ${'$'}adb @adbArgs 2>&1 | ForEach-Object { "${'$'}_" }
     return (${'$'}lines -join "`n")
 }
+
+function Show-AdbServerLog {
+    # adb 서버는 시작 시점의 TEMP(= 에이전트 buildTmp)에 adb.log를 쓴다
+    ${'$'}log = Join-Path ${'$'}env:TEMP 'adb.log'
+    if (Test-Path ${'$'}log) {
+        Write-Host '>> adb server log (tail):'
+        Get-Content ${'$'}log -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('   ' + ${'$'}_) }
+    }
+}
+
+function Restart-AdbServer {
+    ${'$'}null = Invoke-Adb @('kill-server')
+    Start-Sleep -Seconds 1
+    ${'$'}null = Invoke-Adb @('start-server')
+}
+
+Write-Host ('>> ' + ((Invoke-Adb @('version')) -split "`n" | Select-Object -First 2) -join ' / ')
+${'$'}null = Invoke-Adb @('start-server')
 
 function Connect-WirelessDevices([string]${'$'}manualAddress) {
     # mDNS로 찾은 무선 디버깅 연결 엔드포인트(_adb-tls-connect)에 연결. 페어링된 기기만 성공한다.
@@ -718,7 +734,16 @@ if (${'$'}code -notmatch '^\d{6}${'$'}') { Write-Host "##teamcity[buildProblem d
 
 ${'$'}r = Invoke-Adb @('pair', ${'$'}addr, ${'$'}code)
 Write-Host (">> adb pair " + ${'$'}addr + " : " + ${'$'}r.Trim())
+if (${'$'}r -match 'protocol fault') {
+    # 클라이언트가 adb 서버(5037)의 응답을 못 받음 = 서버 쪽 문제(이전 빌드의 오래된 서버 등) → 서버 재시작 후 같은 코드로 1회 재시도
+    Show-AdbServerLog
+    Write-Host '>> adb server restart + retry'
+    Restart-AdbServer
+    ${'$'}r = Invoke-Adb @('pair', ${'$'}addr, ${'$'}code)
+    Write-Host (">> adb pair (retry) " + ${'$'}addr + " : " + ${'$'}r.Trim())
+}
 if (${'$'}r -notmatch 'Successfully paired') {
+    Show-AdbServerLog
     Write-Host "##teamcity[buildProblem description='adb pair failed - code expired (1-2 min), wrong address, or phone on another subnet']"
     exit 1
 }
@@ -764,13 +789,29 @@ object DeployToDevice : BuildType({
 ${'$'}ErrorActionPreference = 'Continue'
 ${'$'}adb = Join-Path ${'$'}env:ANDROID_HOME 'platform-tools\adb.exe'
 if (-not ${'$'}env:ANDROID_HOME -or -not (Test-Path ${'$'}adb)) { Write-Host "##teamcity[buildProblem description='adb not found under ANDROID_HOME on the agent']"; exit 1 }
-& ${'$'}adb start-server | Out-Null
-
 function Invoke-Adb([string[]]${'$'}adbArgs) {
     # 네이티브 stderr를 문자열로 합쳐 반환 (PS 5.1 ErrorRecord 장식 제거)
     ${'$'}lines = & ${'$'}adb @adbArgs 2>&1 | ForEach-Object { "${'$'}_" }
     return (${'$'}lines -join "`n")
 }
+
+function Show-AdbServerLog {
+    # adb 서버는 시작 시점의 TEMP(= 에이전트 buildTmp)에 adb.log를 쓴다
+    ${'$'}log = Join-Path ${'$'}env:TEMP 'adb.log'
+    if (Test-Path ${'$'}log) {
+        Write-Host '>> adb server log (tail):'
+        Get-Content ${'$'}log -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('   ' + ${'$'}_) }
+    }
+}
+
+function Restart-AdbServer {
+    ${'$'}null = Invoke-Adb @('kill-server')
+    Start-Sleep -Seconds 1
+    ${'$'}null = Invoke-Adb @('start-server')
+}
+
+Write-Host ('>> ' + ((Invoke-Adb @('version')) -split "`n" | Select-Object -First 2) -join ' / ')
+${'$'}null = Invoke-Adb @('start-server')
 
 function Connect-WirelessDevices([string]${'$'}manualAddress) {
     # mDNS로 찾은 무선 디버깅 연결 엔드포인트(_adb-tls-connect)에 연결. 페어링된 기기만 성공한다.
