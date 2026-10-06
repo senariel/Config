@@ -364,7 +364,10 @@ UBA executor가 Horde에 `GET http://<server>:13340/api/v1/server/auth`로 인�
 ### Package / 공통 세부
 
 - **설정 위치가 엔진과 다름**: `.teamcity-lordmaker/settings.kts`. TeamCity 프로젝트 `LordMaker`(DevPub 하위)의 Versioned Settings가 같은 Config 저장소를 `settingsPath=.teamcity-lordmaker`로 따로 읽는다(VCS 루트 `DevPub_Config`). 엔진(`.teamcity/`)과 독립적으로 반영·실패함.
-- VCS 토큰(`tc_token_id:...61fab572...`)은 **LordMaker 프로젝트에서 DevPubApp으로 발급**한 것. TeamCity의 refreshable token은 발급한 프로젝트(와 하위)에서만 쓸 수 있어 엔진 쪽 토큰을 재사용하면 `Repository not found`/`token is associated with other projects`로 실패한다.
+- VCS 토큰: TeamCity의 DevPubApp(GitHub App) refreshable token은 **발급한 프로젝트(와 하위)에서만, 발급할 때의 저장소에만** 유효하다. 다른 저장소에 재사용하면 `Repository not found`, 다른 프로젝트면 `token is associated with other projects`.
+  - GameVcs(LordMaker) `…61fab572…` — LordMaker 프로젝트에서 발급
+  - ServerVcs(LordMakerServer) `…fbbb8e0e…` — 상위 **DevPub** 프로젝트의 VCS 루트 `DevPub_LordMakerServer`로 발급(LordMaker는 UI 편집 꺼짐). **이 VCS 루트는 지우지 말 것**(토큰 보관처).
+  - 새 저장소를 추가할 때: DevPub(UI 편집 가능)에 그 저장소 URL로 VCS 루트 생성 → Refreshable token → DevPubApp → 생성된 `tokenId`를 REST(`/app/rest/vcs-roots/id:<id>?fields=properties(...)`)로 읽어 DSL에 넣는다.
 - 게임 저장소 `senariel/LordMaker`(main, Git LFS). 설치형 엔진 `D:\Shared\UE5`(Build Editor 산출물)로 `RunUAT BuildCookRun`. Agent_Win64 고정(LordMaker 전 구성 동일).
 - 파라미터: `Platforms`(Win64+Android / Win64 / Android), `ClientConfig`(Development만 — 설치형 엔진이 `GameConfigurations=Development`로 빌드됨. Shipping은 엔진 재빌드 필요), `LMServerUrl`.
 - 서버 주소: 게임 코드 수정 없이 작업 사본의 `Config/<Platform>/<Platform>Engine.ini`에 `[ConsoleVariables] LM.Server.Url=...`를 주입(커밋 안 함). `LM.Server.Url`은 ECVF_Default cvar라 ini로 덮어써짐.
