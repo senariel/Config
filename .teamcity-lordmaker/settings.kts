@@ -846,7 +846,7 @@ object DeployToDevice : BuildType({
 
     steps {
         powerShell {
-            name = "Install + inject test DeviceId"
+            name = "Install (+ launch)"
             id = "Deploy"
             scriptMode = script {
                 content = """
@@ -961,7 +961,8 @@ foreach (${'$'}d in ${'$'}devices) {
         for (${'$'}i = 0; ${'$'}i -lt 30 -and ${'$'}ids.Count -eq 0; ${'$'}i++) {
             Start-Sleep -Seconds 2
             ${'$'}log = Invoke-Adb @('-s', ${'$'}s, 'logcat', '-d')
-            ${'$'}ids = @([regex]::Matches(${'$'}log, 'deviceId=([A-Za-z0-9._:-]+)') | ForEach-Object { ${'$'}_.Groups[1].Value } | Select-Object -Unique)
+            # 게임 로그인 줄(LogLMLogin)만 — 시스템 로그에도 'deviceId=14' 같은 줄이 많다
+            ${'$'}ids = @([regex]::Matches(${'$'}log, 'LogLMLogin[^\r\n]*deviceId=([A-Za-z0-9._:-]+)') | ForEach-Object { ${'$'}_.Groups[1].Value } | Select-Object -Unique)
         }
         if (${'$'}ids.Count -gt 0) { Write-Host (">> 로그인 deviceId (참고): " + (${'$'}ids -join ', ')) }
         else { Write-Host '>> 60초 안에 로그인 deviceId 로그가 보이지 않음 (참고) — 문제면 Collect Device Logs 실행' }
