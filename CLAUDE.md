@@ -359,9 +359,12 @@ UBA executor가 Horde에 `GET http://<server>:13340/api/v1/server/auth`로 인�
 | Server | Server Tests | LordMakerServer 모든 브랜치 | LMCore main `.pyd` + `LORDMAKER_FIXTURES` → pytest(JUnit) |
 | Server | Static Data Drift | 매일 03:30 | 서버 `tools/check_static_drift.py` (0 일치 / 1 드리프트 / 2 체크아웃 문제) |
 | Device | Register Device | 수동 (기기당 1회) | 휴대폰 무선 디버깅 페어링 IP:포트·6자리 코드로 `adb pair` (키는 에이전트 adb에 영구 저장) |
-| Device | Deploy to Device | 수동 | `D:\Shared\LordMaker\Android`(또는 `ApkDir`)의 APK 설치 → `UECommandLine.txt`(스테이징 기본 명령줄 + `-LMDeviceId=lmtest-<모델>-<시리얼해시8>`) push·재검증 → (옵션) 실행 후 logcat 로그인 ID 확인 |
+| Device | Deploy to Device | 수동 | `D:\Shared\LordMaker\Android`(또는 `ApkDir`)의 APK `install -r` → (옵션) 실행 후 `LogLMLogin` deviceId 참고 출력. **ID 주입 없음** |
+| Device | Collect Device Logs | 수동 | logcat(crash/all)·UE 로그·크래시 폴더 → 아티팩트 `device-logs.zip`. 서버 주소·네트워크·로그인 줄 요약 |
 
-- **Device 테스트 DeviceId**: Android는 외부 `UECommandLine.txt`가 명령줄 전체를 교체한다. 파일이 없으면 `FPlatformMisc::GetLoginId()` = 설치마다 무작위 GUID라 **새 게스트 계정**이 생길 뿐 실계정과 겹치지 않는다(2026-10-06 정정 — 처음엔 실계정 로그인 위험으로 잘못 판단). `-LMDeviceId`의 목적은 ① 재설치·데이터 삭제 후에도 같은 테스트 계정 유지(없으면 고아 계정 누적) ② `lmtest-` 접두로 테스트 계정 식별·정리. Deploy는 push·검증 실패 기기에서 앱을 실행하지 않고, logcat에 `lmtest-` 아닌 deviceId가 보이면 주입 실패로 보고 강제 종료·실패 처리. 게임 쪽 전제: `bPackageDataInsideApk=True`, `bUseExternalFilesDir=True`, `-LMDeviceId` 지원(비Shipping).
+- **기기 ID는 배포 도구가 정하지 않는다** (사용자 결정, 2026-10-07): 앱 첫 실행 때 엔진(`FAndroidMisc::GetLoginId()`)이 무작위 GUID를 만들어 내부 저장소 `files/login-identifier.txt`에 저장하고, `install -r`해도 유지된다. 실계정과 겹치지 않는다. 그래서 테스트 ID 주입(외부 `UECommandLine.txt`의 `-LMDeviceId`, `run-as`로 로그인 ID 파일 쓰기)은 폐기했고, 클라도 `-LMDeviceId`를 제거했다(PR #101). 참고: 외부 `UECommandLine.txt`는 adb가 넣은 파일을 앱이 열지 못해 무시됐었다(`[GameActivity] Using APK commandline`).
+- **서버 주소는 클라가 가진다** (LordMaker main 6207355~): `DefaultGame.ini` `[/Script/LordMaker.LMServerSettings]` 서버 목록(Live 기본=`https://lm.senariel.duckdns.org`, Lan, Local, Test). 선택: 콘솔 `LM.Server.Url` > 명령줄 `-LMServer=<이름|URL>` > 저장된 선택 > 기본. Shipping은 항상 Live. **빌드는 주소를 주입하지 않는다** — Package는 예전에 작업 사본에 써 둔 `Config/<Platform>/<Platform>Engine.ini`(Git 추적 밖이라 체크아웃 정리로 안 지워짐)를 지운다.
+- 함정: **UE ini 값에 `//`가 있으면 따옴표로 감쌀 것.** 따옴표 없는 값은 `//`부터 주석으로 잘린다(`ConfigCacheIni.cpp`). 예전 주입 `LM.Server.Url=https://…`가 `https:`로 잘려 앱이 `GET https:/v1/compat`(Could not resolve host)를 보냈다(Package #33).
 
 - 공통 파라미터(프로젝트 레벨): `env.UE5_ENGINE_ROOT`, `env.LM_PYTHON`(`C:\Program Files\Python314\python.exe` — **모든 사용자 설치** 필요, LocalSystem 에이전트), `env.VCVARS64`.
 - 서버 배포·재시작은 넣지 않음(서버 세션이 버전 동기·.pyd 교체·DB와 묶어 수동 관리). Device(테스트 기기)·Shipping은 미구현.
@@ -375,8 +378,7 @@ UBA executor가 Horde에 `GET http://<server>:13340/api/v1/server/auth`로 인�
   - ServerVcs(LordMakerServer) `…fbbb8e0e…` — 상위 **DevPub** 프로젝트의 VCS 루트 `DevPub_LordMakerServer`로 발급(LordMaker는 UI 편집 꺼짐). **이 VCS 루트는 지우지 말 것**(토큰 보관처).
   - 새 저장소를 추가할 때: DevPub(UI 편집 가능)에 그 저장소 URL로 VCS 루트 생성 → Refreshable token → DevPubApp → 생성된 `tokenId`를 REST(`/app/rest/vcs-roots/id:<id>?fields=properties(...)`)로 읽어 DSL에 넣는다.
 - 게임 저장소 `senariel/LordMaker`(main, Git LFS). 설치형 엔진 `D:\Shared\UE5`(Build Editor 산출물)로 `RunUAT BuildCookRun`. Agent_Win64 고정(LordMaker 전 구성 동일).
-- 파라미터: `Platforms`(Win64+Android / Win64 / Android), `ClientConfig`(Development만 — 설치형 엔진이 `GameConfigurations=Development`로 빌드됨. Shipping은 엔진 재빌드 필요), `LMServerUrl`.
-- 서버 주소: 게임 코드 수정 없이 작업 사본의 `Config/<Platform>/<Platform>Engine.ini`에 `[ConsoleVariables] LM.Server.Url=...`를 주입(커밋 안 함). `LM.Server.Url`은 ECVF_Default cvar라 ini로 덮어써짐.
+- 파라미터: `Platforms`(Win64+Android / Win64 / Android), `ClientConfig`(Development만 — 설치형 엔진이 `GameConfigurations=Development`로 빌드됨. Shipping은 엔진 재빌드 필요), `ArchiveBuild`. (`LMServerUrl`은 2026-10-07 제거 — 위 "서버 주소는 클라가 가진다")
 - Android는 `-cookflavor=ASTC` 고정, 단일 APK(`bPackageDataInsideApk=True`). 산출물 위치는 위 표(배포 폴더 1개 + 선택적 zip).
 - 서브모듈 `Plugins/ClaudeBridge`(에디터 전용, private)는 체크아웃 안 함. 체크아웃 폴더는 `LordMakerPkg`.
 - 옛 UI 구성(루트 직속 `LordMaker` 프로젝트의 Build Android·Register Mobile Device·Deploy to Mobile·Build Engine)은 2026-10-06 이 DSL로 대체되며 삭제됨. 프로젝트 ID `LordMaker`는 그대로 재사용.
@@ -410,6 +412,7 @@ CLAUDE.md               ← 이 파일
 - 2026-10 (2차): `ArchiveBuild` zip을 배포 폴더 밖 `UE5_ARCHIVE_PATH`로 이동 + `ArchiveKeepCount` 보관 개수 제한 + 실패 시 기존 zip 보존. (배포 폴더 안에 만들면 다음 빌드의 robocopy /MIR이 지우던 문제.)
 - 2026-10 (3차): **LordMaker 패키징 구성** 추가(Win64+Android Development, 서버 주소 ini 주입, 아티팩트 게시). 루트에 UI로 만들어져 있던 `LordMaker / Build Android`(모든 브랜치 VCS 트리거)는 일시 정지 — 서버 재부팅 때 밀린 브랜치 빌드가 Agent_Win64를 몇 시간씩 점유하던 문제.
 - 2026-10 (5차): LordMaker를 Client(Editor Build·Android Compile·Core Gates·Package)/Server(LMCore·Server Tests·Static Data Drift) 하위 프로젝트로 분리. Package 아티팩트 미게시(#29) 수정.
+- 2026-10-07: Device 추가 후 실기기 검증. SM5 크래시 → 게임이 모바일 렌더러로 전환. 서버 접속 실패(주입 값 `//` 잘림) → **서버 주소 주입 제거**(클라 서버 목록 사용), **테스트 DeviceId 주입 폐기**(기기 자체 ID). Package 결과를 공유 폴더 최신본 1개로. main 6207355 실기기에서 Live 접속·게스트 로그인·던전 진입 확인.
 - 2026-10 (4차): LordMaker를 `DevPub / LordMaker`로 재배치 — 엔진 DSL 하위 프로젝트가 아니라 **별도 settingsPath(`.teamcity-lordmaker/`)** 로 분리. 엔진 DSL 루트를 DevPub으로 올리는 안은 Sync Fork 보안 토큰(UnrealEngine5 프로젝트에 저장) 유실 위험 때문에 보류. 옛 UI 구성 4개 삭제.
 
 ## 다음에 할 만한 것 (TODO 후보)
@@ -418,5 +421,4 @@ CLAUDE.md               ← 이 파일
 - [ ] Build Editor 앞단에 Horde 헬스체크 (`curl http://localhost:PORT/api/v1/server/info`)
 - [ ] Build Editor 아티팩트로 `.modules` + DLL 해시 publish (모듈 로딩 디버깅용)
 - [ ] 주간 정기 트리거 — `CleanMode=FullRebuild` 강제로 누적 쓰레기 정리
-- [ ] LordMaker Device 실기기 검증 — 게임 저장소의 단일 APK·외부 명령줄 경로·-LMDeviceId 변경 머지 후
 - [ ] 에이전트 추가 — 브랜치 푸시마다 3개 빌드가 Agent_Win64 하나에 몰림(Package 수 시간 중엔 대기)
