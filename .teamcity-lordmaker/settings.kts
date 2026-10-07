@@ -294,9 +294,6 @@ object Package : BuildType({
                 options = listOf("Win64 + Android" to "Win64+Android", "Win64" to "Win64", "Android" to "Android"))
         // 설치형 엔진이 GameConfigurations=Development만 포함 → Shipping은 엔진 재빌드 후 추가
         select("ClientConfig", "Development", label = "구성", options = listOf("Development" to "Development"))
-        text("LMServerUrl", "https://lm.senariel.duckdns.org", label = "게임 서버 주소",
-                description = "LM.Server.Url cvar로 주입 (Config/<Platform>/<Platform>Engine.ini [ConsoleVariables], 커밋 안 함)",
-                display = ParameterDisplay.NORMAL, allowEmpty = false)
     }
 
     vcs {
@@ -330,16 +327,15 @@ ${'$'}pointers = @(git lfs ls-files --name-only | Select-Object -First 50 | Wher
 if (${'$'}pointers.Count -gt 0) { Write-Host ("##teamcity[buildProblem description='LFS not pulled (pointer only): " + ${'$'}pointers[0] + "']"); exit 1 }
 Write-Host ">> LFS OK"
 
-# 1) 서버 주소 주입: 플랫폼 ini [ConsoleVariables] (작업 사본에만 — 커밋 안 함)
-${'$'}url = '%LMServerUrl%'.Trim()
+# 1) 예전 서버 주소 주입 파일 정리 — 서버 주소는 클라가 직접 가진다(DefaultGame.ini 서버 목록, 기본 Live; main 6207355~).
+#    예전 빌드가 작업 사본에 써 둔 ini는 Git 추적 밖이라 체크아웃 정리(브랜치 변경 시만)로 안 지워진다 → 남으면 패키지에 다시 들어감.
+#    다른 서버로 붙여야 하면 빌드가 아니라 실행 시 -LMServer=<Live|Lan|Local|Test|URL>.
 foreach (${'$'}p in @('Windows', 'Android')) {
     ${'$'}rel = "Config/${'$'}p/${'$'}{p}Engine.ini"
-    ${'$'}ini = Join-Path (Get-Location) ${'$'}rel
-    New-Item (Split-Path ${'$'}ini) -ItemType Directory -Force | Out-Null
+    if (-not (Test-Path ${'$'}rel)) { continue }
     git ls-files --error-unmatch ${'$'}rel *> ${'$'}null
-    if (${'$'}LASTEXITCODE -eq 0) { git checkout -- ${'$'}rel; ${'$'}prefix = (Get-Content ${'$'}ini -Raw) + "`r`n" } else { ${'$'}prefix = '' }
-    Set-Content -Path ${'$'}ini -Encoding UTF8 -Value (${'$'}prefix + "; [TeamCity] build-time injection`r`n[ConsoleVariables]`r`nLM.Server.Url=${'$'}url`r`n")
-    Write-Host ">> ${'$'}rel : LM.Server.Url=${'$'}url"
+    if (${'$'}LASTEXITCODE -eq 0) { git checkout -- ${'$'}rel; Write-Host ">> ${'$'}rel : 저장소 원본으로 복원" }
+    else { Remove-Item -LiteralPath ${'$'}rel -Force; Write-Host ">> ${'$'}rel : 예전 주입 파일 삭제" }
 }
 
 # 배포: 최신 1개만 유지 (TeamCity 아티팩트로 쌓지 않음 — 디스크 여유 부족)
@@ -366,7 +362,7 @@ function Publish-Platform([string]${'$'}plat, [string]${'$'}src) {
     }
     ${'$'}info = @(
         "build=%build.number%", "revision=%build.vcs.number%", "branch=%teamcity.build.branch%",
-        "config=%ClientConfig%", "platform=${'$'}plat", "serverUrl=%LMServerUrl%", ("date=" + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+        "config=%ClientConfig%", "platform=${'$'}plat", ("date=" + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
     )
     Set-Content -Path (Join-Path ${'$'}src 'BUILD_INFO.txt') -Value ${'$'}info -Encoding UTF8
 
@@ -831,7 +827,7 @@ Write-Host ">> 페어링 완료. 이제 Deploy to Device로 설치할 수 있습
 
 object DeployToDevice : BuildType({
     name = "Deploy to Device"
-    description = "Package 최신 APK(D:/Shared/LordMaker/Android) 설치 + 테스트 DeviceId(lmtest-<모델>-<시리얼해시8>) 명령줄 주입·검증. 검증 실패 기기는 앱 실행 안 함."
+    description = "Package 최신 APK(D:/Shared/LordMaker/Android)를 연결된 테스트 기기에 install -r. 기기 ID는 앱이 스스로 만든다(주입 안 함)."
 
     params {
         text("ApkDir", "", label = "APK 폴더 (선택)",
@@ -844,7 +840,7 @@ object DeployToDevice : BuildType({
                 description = "mDNS로 기기를 못 찾을 때: 휴대폰 무선 디버깅 화면의 'IP 주소 및 포트'(페어링 포트와 다름)",
                 display = ParameterDisplay.NORMAL, allowEmpty = true)
         checkbox("LaunchAfterInstall", "false", label = "설치 후 실행",
-                description = "실행 후 logcat에서 로그인 deviceId가 lmtest-인지 확인 (아니면 강제 종료·실패)",
+                description = "설치 후 앱을 실행하고 logcat의 로그인 deviceId를 참고용으로 출력",
                 checked = "true", unchecked = "false")
     }
 
@@ -921,10 +917,10 @@ function Get-OnlineDevices {
     return ,${'$'}list
 }
 
-# --- Deploy to Device: 설치 → 테스트 DeviceId 명령줄 주입·검증 → (옵션) 실행·로그인 ID 확인 ---
-# 명령줄 파일 push·검증이 실패한 기기에서는 앱을 실행하지 않는다 (테스트 계정이 아닌 새 게스트 계정이 생기는 것 방지)
+# --- Deploy to Device: 연결 → install -r → (옵션) 실행·로그인 deviceId 참고 출력 ---
+# 기기 ID(계정)는 배포 도구가 정하지 않는다 — 앱 첫 실행 때 엔진이 무작위 ID를 만들어 내부 저장소에 저장하고,
+# install -r 해도 유지된다(사용자 결정, 2026-10-07). 그래서 ID 주입·검증 단계는 없다.
 ${'$'}pkg       = 'com.devpub.lordmaker'
-${'$'}remoteDir = "/sdcard/Android/data/${'$'}pkg/files/UnrealGame/LordMaker"
 ${'$'}filter    = '%DeviceFilter%'.Trim()
 ${'$'}launch    = '%LaunchAfterInstall%' -eq 'true'
 
@@ -937,16 +933,6 @@ Write-Host (">> APK: " + ${'$'}apk.FullName + " (" + [math]::Round(${'$'}apk.Len
 ${'$'}infoFile = Join-Path ${'$'}apkDir 'BUILD_INFO.txt'
 if (Test-Path ${'$'}infoFile) { Get-Content ${'$'}infoFile | ForEach-Object { Write-Host ("   " + ${'$'}_) } }
 
-# 기본 명령줄 = Package가 같이 둔 스테이징 UECommandLine.txt (외부 파일이 명령줄 전체를 '교체'하므로 반드시 포함)
-${'$'}baseFile = Join-Path ${'$'}apkDir 'UECommandLine.txt'
-if (Test-Path ${'$'}baseFile) {
-    ${'$'}baseCmd = (Get-Content ${'$'}baseFile -TotalCount 1).Trim()
-} else {
-    ${'$'}baseCmd = '../../../LordMaker/LordMaker.uproject'
-    Write-Host "##teamcity[message text='UECommandLine.txt not next to the APK - using default base command line' status='WARNING']"
-}
-Write-Host (">> base command line: " + ${'$'}baseCmd)
-
 ${'$'}manualAddress = '%ConnectAddress%'.Trim()
 Connect-WirelessDevices ${'$'}manualAddress
 ${'$'}devices = Get-OnlineDevices
@@ -956,58 +942,33 @@ if (${'$'}devices.Count -eq 0) {
     exit 1
 }
 
-${'$'}sha = [System.Security.Cryptography.SHA256]::Create()
-${'$'}utf8 = New-Object System.Text.UTF8Encoding ${'$'}false   # BOM 없이 (BOM이 명령줄 첫 글자로 들어가면 안 됨)
 ${'$'}failed = @()
 foreach (${'$'}d in ${'$'}devices) {
     ${'$'}s = ${'$'}d.Serial
-    ${'$'}hash = (-join (${'$'}sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(${'$'}d.HwSerial)) | Select-Object -First 4 | ForEach-Object { ${'$'}_.ToString('x2') }))
-    ${'$'}slug = (${'$'}d.Model.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
-    if (${'$'}slug.Length -gt 40) { ${'$'}slug = ${'$'}slug.Substring(0, 40).Trim('-') }
-    ${'$'}id = "lmtest-${'$'}slug-${'$'}hash"
-    ${'$'}line = "${'$'}baseCmd -LMDeviceId=${'$'}id"
-    Write-Host "##teamcity[blockOpened name='${'$'}(${'$'}d.Model) (${'$'}id)']"
+    ${'$'}label = ${'$'}d.Model + ' ' + ${'$'}d.HwSerial
+    Write-Host "##teamcity[blockOpened name='${'$'}label']"
 
     ${'$'}ok = ${'$'}true
     ${'$'}r = Invoke-Adb @('-s', ${'$'}s, 'install', '-r', ${'$'}apk.FullName)
     Write-Host (">> install: " + ${'$'}r.Trim())
     if (${'$'}r -notmatch 'Success') { ${'$'}ok = ${'$'}false; Write-Host '>> 설치 실패' }
 
-    if (${'$'}ok) {
-        ${'$'}null = Invoke-Adb @('-s', ${'$'}s, 'shell', 'mkdir', '-p', ${'$'}remoteDir)
-        ${'$'}tmp = [System.IO.Path]::GetTempFileName()
-        [System.IO.File]::WriteAllText(${'$'}tmp, ${'$'}line, ${'$'}utf8)
-        ${'$'}r = Invoke-Adb @('-s', ${'$'}s, 'push', ${'$'}tmp, "${'$'}remoteDir/UECommandLine.txt")
-        Remove-Item ${'$'}tmp -Force
-        Write-Host (">> push: " + ${'$'}r.Trim())
-        ${'$'}back = (Invoke-Adb @('-s', ${'$'}s, 'shell', 'cat', "${'$'}remoteDir/UECommandLine.txt")).Trim()
-        if (${'$'}back -ne ${'$'}line) { ${'$'}ok = ${'$'}false; Write-Host (">> 명령줄 파일 검증 실패 - 읽은 값: " + ${'$'}back) }
-        else { Write-Host (">> 명령줄 파일 확인: " + ${'$'}back) }
-    }
-
     if (${'$'}ok -and ${'$'}launch) {
         ${'$'}null = Invoke-Adb @('-s', ${'$'}s, 'logcat', '-c')
         ${'$'}null = Invoke-Adb @('-s', ${'$'}s, 'shell', 'monkey', '-p', ${'$'}pkg, '-c', 'android.intent.category.LAUNCHER', '1')
+        # 로그인 deviceId는 판정 없이 참고용으로만 출력 (최대 60초 대기)
         ${'$'}ids = @()
         for (${'$'}i = 0; ${'$'}i -lt 30 -and ${'$'}ids.Count -eq 0; ${'$'}i++) {
             Start-Sleep -Seconds 2
             ${'$'}log = Invoke-Adb @('-s', ${'$'}s, 'logcat', '-d')
             ${'$'}ids = @([regex]::Matches(${'$'}log, 'deviceId=([A-Za-z0-9._:-]+)') | ForEach-Object { ${'$'}_.Groups[1].Value } | Select-Object -Unique)
         }
-        ${'$'}realIds = @(${'$'}ids | Where-Object { ${'$'}_ -notlike 'lmtest-*' })
-        if (${'$'}ids.Count -eq 0) {
-            Write-Host "##teamcity[message text='${'$'}(${'$'}d.Model): login deviceId not seen in logcat within 60s (command line file was verified)' status='WARNING']"
-        } elseif (${'$'}realIds.Count -eq 0) {
-            Write-Host (">> 로그인 deviceId 확인: " + (${'$'}ids -join ', '))
-        } else {
-            ${'$'}null = Invoke-Adb @('-s', ${'$'}s, 'shell', 'am', 'force-stop', ${'$'}pkg)
-            ${'$'}ok = ${'$'}false
-            Write-Host ('>> 테스트 DeviceId 주입 실패 - lmtest- 아닌 deviceId로 로그인: ' + (${'$'}realIds -join ', ') + ' → 앱 강제 종료')
-        }
+        if (${'$'}ids.Count -gt 0) { Write-Host (">> 로그인 deviceId (참고): " + (${'$'}ids -join ', ')) }
+        else { Write-Host '>> 60초 안에 로그인 deviceId 로그가 보이지 않음 (참고) — 문제면 Collect Device Logs 실행' }
     }
 
-    Write-Host "##teamcity[blockClosed name='${'$'}(${'$'}d.Model) (${'$'}id)']"
-    if (-not ${'$'}ok) { ${'$'}failed += ${'$'}d.Model; Write-Host "##teamcity[buildProblem description='Deploy failed on ${'$'}(${'$'}d.Model) (${'$'}id)' identity='deploy_${'$'}hash']" }
+    Write-Host "##teamcity[blockClosed name='${'$'}label']"
+    if (-not ${'$'}ok) { ${'$'}failed += ${'$'}d.Model; Write-Host "##teamcity[buildProblem description='Deploy failed on ${'$'}label' identity='deploy_${'$'}(${'$'}d.HwSerial)']" }
 }
 if (${'$'}failed.Count -gt 0) { exit 1 }
 Write-Host (">> 배포 완료: " + ${'$'}devices.Count + "대")
@@ -1150,6 +1111,7 @@ foreach (${'$'}d in ${'$'}devices) {
         Write-Host ("   pull " + ${'$'}sub + ": " + ((${'$'}r -split "`n") | Select-Object -Last 1))
     }
 
+
     # 콘솔에 핵심만: 치명 오류·네이티브 크래시·UE Fatal
     ${'$'}crash = Get-Content (Join-Path ${'$'}dir 'logcat-crash.txt') -ErrorAction SilentlyContinue
     ${'$'}all   = Get-Content (Join-Path ${'$'}dir 'logcat-all.txt') -ErrorAction SilentlyContinue
@@ -1157,6 +1119,9 @@ foreach (${'$'}d in ${'$'}devices) {
     ${'$'}crash | Select-Object -Last 60 | ForEach-Object { Write-Host ('   ' + ${'$'}_) }
     Write-Host '>> UE Fatal/Error lines (last 60):'
     ${'$'}all | Select-String -Pattern 'Fatal|Assertion failed|Unhandled Exception|SIGSEGV|SIGABRT|signal \d+|LogAndroid.*Error|Error:' | Select-Object -Last 60 | ForEach-Object { Write-Host ('   ' + ${'$'}_.Line) }
+    # 참고용(판정 없음): 서버 주소·네트워크·로그인 — 접속 문제를 볼 때 먼저 보는 줄
+    Write-Host '>> network/login lines (last 30, reference):'
+    ${'$'}all | Select-String -Pattern 'LM\.Server\.Url|LogLMNetwork|LogLMLogin|deviceId=|LogHttp: Warning|LogSsl|LogCurl' | Select-Object -Last 30 | ForEach-Object { Write-Host ('   ' + ${'$'}_.Line) }
 }
 Write-Host ">> 로그는 빌드 아티팩트 device-logs.zip 에 있습니다"
                 """.trimIndent()
