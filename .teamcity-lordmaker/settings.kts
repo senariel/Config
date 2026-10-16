@@ -746,14 +746,16 @@ python3.14 -m venv "${'$'}REL/.venv"
 } > "${'$'}REL/DEPLOY_INFO.txt"
 sed 's/^/   /' "${'$'}REL/DEPLOY_INFO.txt"
 
-# 2. DB 백업 (온라인 백업 — 서버가 돌고 있어도 일관된 사본. 새 DB면 건너뜀). 위치 /mnt/d/LordMaker/db/<포트> (samba 공유 밖, LordMaker 외부 데이터는 /mnt/d/LordMaker 아래)
+# 2. DB 백업 = 배포 직전 복구 지점 (온라인 백업 — 서버가 돌고 있어도 일관된 사본. 새 DB면 건너뜀)
+# 위치 /mnt/d/LordMaker/backups/<포트> — samba·Nextcloud가 보는 /mnt/d/Shared 밖. 포트별 최근 10개만 유지
 DB="$(grep '^LORDMAKER_DB=' "${'$'}ENV_FILE" | cut -d= -f2-)"
 if [ -f "${'$'}DB" ]; then
-  BK="/mnt/d/LordMaker/db/${'$'}PORT/$(date +%%Y%%m%%d-%%H%%M%%S)-${'$'}{SREV:0:7}.db"
+  BK="/mnt/d/LordMaker/backups/${'$'}PORT/$(date +%%Y%%m%%d-%%H%%M%%S)-${'$'}{SREV:0:7}.db"
   sqlite3 "${'$'}DB" ".backup '${'$'}BK'"
   QC="$(sqlite3 "${'$'}BK" 'PRAGMA quick_check;')"
   [ "${'$'}QC" = "ok" ] || { echo "##teamcity[buildProblem description='DB backup quick_check failed: ${'$'}QC']"; exit 1; }
   echo ">> DB backup: ${'$'}BK ($(du -h "${'$'}BK" | cut -f1), quick_check ok)"
+  ls -1t "/mnt/d/LordMaker/backups/${'$'}PORT"/*.db 2>/dev/null | tail -n +11 | while read -r old; do rm -f -- "${'$'}old"; echo ">> removed old backup $(basename "${'$'}old")"; done
 else
   echo ">> DB backup: skipped (no DB yet: ${'$'}DB)"
 fi
