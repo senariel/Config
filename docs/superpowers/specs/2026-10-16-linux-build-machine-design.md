@@ -256,7 +256,7 @@ horde-redis    redis:alpine (Nextcloud용과 분리)        볼륨 /srv/horde/re
 | P1 | 리눅스 에이전트 설치·승인, 툴셋. Server·Device 구성 리눅스 전환 | LMCore·Server Tests·Drift 녹색, 폰 재페어링·Deploy 성공 |
 | P2 | Horde 서버 compose 기동 | MAGI·MAGI-LAPTOP 워커가 Horde에 붙음 |
 | P3 | 게임 서버: 계정·경로·유닛·ufw. 8801을 새 DB로 먼저 기동 → Deploy Server로 배포 확인 → 결정론 게이트 G1~G4 | **완료(2026-10-16)**: Deploy #1 8801 28/23 totalTurns 54, G4 960행 일치 |
-| P4 | **전환 당일** (아래) | 실서버 트래픽이 .180으로 |
+| P4 | **전환 당일** (아래) | **완료(2026-10-16)**: Deploy #2 8800, Caddy 전환, `/internal/*` 403, 외부 접속 확인. 실기기 플레이 확인은 새 APK(P5) 뒤 |
 | P5 | Windows 에이전트 Engine·Project 설치, Client·UnrealEngine5 구성 이전, 엔진 전달 경로 | Editor Build·Package 녹색 |
 | P6 | 문서: 위키(01·02·05·06·07·08·09·10), Config `CLAUDE.md` | 위키만 보고 운영 가능 |
 
@@ -283,4 +283,4 @@ horde-redis    redis:alpine (Nextcloud용과 분리)        볼륨 /srv/horde/re
 3. **Horde 이미지 출처**: ghcr 접근 가능 여부.
 4. ~~G3 실행 방법~~ → **방식 확정(2026-10-16)**: 클라 `sweep_gate`(4장 표). 구현 완료 통지는 클라 세션이 직접. G2·G4 명령도 확정.
 5. **Android Compile 체크아웃 분리 유지 여부**(Project 에이전트 디스크).
-6. **프록시 `/v1/debug/*` 차단**: 2026-10-07 결정("테스트 기간 차단 안 함")을 이전 시점에 바꿀지 — 사용자 확인.
+6. ~~프록시 `/v1/debug/*` 차단~~ → 열어 둠(2026-10-16, 본인 계정 한정 기능 — 서버 세션 확인).
