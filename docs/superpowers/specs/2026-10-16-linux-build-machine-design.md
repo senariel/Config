@@ -201,7 +201,7 @@ teamcity ALL=(root) NOPASSWD: /usr/bin/systemctl restart lordmaker@8800.service,
 |---|------|------|
 | G1 | ctest 골든 100% | LMCore 구성 |
 | G2 | 서버 pytest 워커 골든 대조(`LORDMAKER_FIXTURES`, 잡 큐 경유 포함) | `LORDMAKER_FIXTURES=<fixtures 경로> ./.venv/bin/python -m pytest tests -q` — 기준 **62 passed, skipped 0**. skip이 하나라도 있으면(코어 버전 불일치·픽스처 부재) 게이트 실패 |
-| G3 | 클라 회귀 sweep SHA가 Windows Core Gates 해시와 동일 | 클라 sweep을 리눅스 `.so`로 재현 — 방법은 클라 세션과 확정 |
+| G3 | 클라 sweep 200시드의 코어 결과 SHA256이 Windows 기대값과 동일 | 클라 `sweep_gate` (구현 중, 클라 세션이 완료 통지): Windows에서 sweep 스냅샷 입력을 코어 JSON 픽스처로 커밋(UE 결과와 대조해 생성) → `python Core/python/sweep_gate.py --fixtures Core/tests/fixtures`가 lmcore로 시뮬, 비결정 필드(`endedAt`) 제거 후 SHA256 대조. `ctest -R sweep_gate`로도 등록 예정 → **사실상 G1(ctest)에 흡수**. 약 30초. UE 커맨드릿 sweep CSV는 리눅스 `.so`만으로 재현할 수 없어 이 방식으로 대체(Windows Core Gates의 CSV SHA는 그대로 유지) |
 | G4 | 시뮬레이터 같은 시드 CSV가 Windows 런과 동일 | `./.venv/bin/python -m bots.simulate --bots 20 --cycles 48 --seed 1 --csv /tmp/sim-linux.csv` → `python tools/compare_sim_csv.py tests/fixtures/sim-gate-seed1-v28.csv /tmp/sim-linux.csv` — exit 0 = 통과(불일치 시 첫 차이 행·열 출력 → 서버 세션). 기준 CSV는 서버 저장소에 포함(`01b9d37`, Rules 28 / Data 23, 960행) — **전환 시점 버전이 28/23과 다르면 서버 세션에 재생성 요청** |
 
 ## 5. Horde 서버 (Docker compose)
@@ -279,6 +279,6 @@ horde-redis    redis:alpine (Nextcloud용과 분리)        볼륨 /srv/horde/re
 1. **Windows 에이전트 머신**: Engine·Project를 둘 PC, 같은 공유기 안인지(밖이면 VPN), 디스크 용량.
 2. ~~배포 확인의 디버그 공성~~ → **해소(2026-10-16)**: `POST /internal/selfcheck`로 대체(4장 Deploy Server 7단계).
 3. **Horde 이미지 출처**: ghcr 접근 가능 여부.
-4. **G3 실행 방법**: 클라 회귀 sweep을 리눅스 `.so`로 재현하는 명령(클라 세션 — 서버 세션이 전달함). G2·G4 명령은 확정(4장 표).
+4. ~~G3 실행 방법~~ → **방식 확정(2026-10-16)**: 클라 `sweep_gate`(4장 표). 구현 완료 통지는 클라 세션이 직접. G2·G4 명령도 확정.
 5. **Android Compile 체크아웃 분리 유지 여부**(Project 에이전트 디스크).
 6. **프록시 `/v1/debug/*` 차단**: 2026-10-07 결정("테스트 기간 차단 안 함")을 이전 시점에 바꿀지 — 사용자 확인.
