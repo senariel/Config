@@ -150,7 +150,11 @@ WorkingDirectory=/srv/lordmaker/current-%i
 EnvironmentFile=/etc/lordmaker/%i.env
 ExecStart=/srv/lordmaker/current-%i/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port %i
 Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
 ```
+- `systemctl enable lordmaker@8800 lordmaker@8801` — **재부팅 자동 기동이 이번 이전의 1차 목적**(서버 세션).
 - **`--workers` 금지(1 고정)**: 스케줄러·LMCore 워커가 게이트웨이 프로세스 내 스레드라 다중 워커 = 중복 틱 + SQLite 경합. 별도 워커 유닛 불필요.
 - 바인딩은 `0.0.0.0`: Caddy가 Docker 컨테이너라 컨테이너의 `127.0.0.1`은 호스트가 아니다. 대신 ufw로 막는다(아래). 서버 세션 초안(`127.0.0.1`)에서 변경.
 - 마이그레이션 단계 없음: `init_db()`가 기동 시 CREATE TABLE/ADD COLUMN을 멱등 수행.
@@ -164,12 +168,14 @@ teamcity ALL=(root) NOPASSWD: /usr/bin/systemctl restart lordmaker@8800.service,
 ```
 
 ### 리버스 프록시·방화벽
-- Caddyfile: `lm.senariel.duckdns.org` → `reverse_proxy host.docker.internal:8800` (현재 `192.168.219.182:8800`). 같은 블록에서 `/internal/*`, `/v1/debug/*`는 `respond 403`.
+- Caddyfile: `lm.senariel.duckdns.org` → `reverse_proxy host.docker.internal:8800` (현재 `192.168.219.182:8800`). 같은 블록에서 `/internal/*`는 `respond 403`(기존 합의).
+- `/v1/debug/*` 차단은 **2026-10-07 사용자 결정("테스트 기간 차단 안 함")을 바꾸는 것**이라 사용자 확인 후 적용한다(미결 6).
 - ufw 활성화(현재 비활성):
   - `default deny incoming`, `allow 22/tcp`, `allow 80,443/tcp`
   - `8800,8801/tcp`: `192.168.219.0/24`(집 안 LAN — 클라 Lan 프로필 직결)와 `172.16.0.0/12`(Docker 대역 — Caddy)에서만 허용
   - 13340·13342(Horde)는 Docker가 연 포트라 ufw를 거치지 않는다. 공유기가 80/443만 포워딩하는 전제에서 LAN 한정.
   - **SSH 허용을 먼저 넣고 활성화**한다(원격 접속 차단 방지).
+  - LAN에 8800/8801을 열면 `/internal/*`도 LAN에서 닿는다(`X-Worker-Token` 보호라 개발 기간 수용). S3 체크리스트: "LAN 직결 제거 또는 토큰 강화".
 
 ### Server / Deploy Server (신규 구성, 수동)
 - 요구 조건 `devpub.role = server`. VCS: ServerVcs(main 기본, 브랜치 선택 가능) + GameVcs(`Core/` 부분 체크아웃).
@@ -182,8 +188,9 @@ teamcity ALL=(root) NOPASSWD: /usr/bin/systemctl restart lordmaker@8800.service,
   5. 링크 전환: `current-<포트>` → 새 릴리스 (이전 대상은 `previous-<포트>`로 기록)
   6. `sudo systemctl restart lordmaker@<포트>`
   7. 확인 (localhost 직결, 프록시 경유 아님):
-     - `GET /v1/static-data/version` — `rulesVersion`·`staticDataVersion`이 체크아웃 상수와 일치
-     - `lmtest-` 계정으로 `POST /v1/debug/sieges` 1건 — 생성→시뮬→정산 동기 완주(코어·워커·스케줄러 검증)
+     - `GET /v1/static-data/version` — `rulesVersion`·`staticDataVersion`이 체크아웃 상수와 일치(비인증 크로스체크)
+     - `POST /internal/selfcheck` (헤더 `X-Worker-Token`, 서버 `c3ae055`~) — 기대: HTTP 200, `ok:true`, `workerThread:true`, `schedulerThread:true`. 서버가 starter 세이브 → 고정 공격대 스냅샷 → 잡 큐 enqueue(defender 없음 — 기록·정산 비대상) → 시뮬 완주 → 점검 잡 삭제까지 수행하므로 코어·워커·스케줄러가 한 번에 검증된다. `ALLOW_DEBUG_SIEGE=0`이어도 동작(2026-10-16 8800·8801 실측 ok, 54턴).
+     - 토큰은 `/etc/lordmaker/<포트>.env`의 `LORDMAKER_WORKER_TOKEN`을 스텝이 읽어 쓴다(로그에 출력하지 않음 — `teamcity`가 env 파일을 읽도록 그룹 `lordmaker`·권한 640).
   8. 실패 시: 링크를 `previous-<포트>`로 되돌리고 재시작, 빌드 실패 처리. DB는 되돌리지 않는다(멱등 스키마, 필요 시 백업에서 수동 복구).
 - 오래된 릴리스는 인스턴스별 최근 5개만 남기고 정리.
 
@@ -193,9 +200,9 @@ teamcity ALL=(root) NOPASSWD: /usr/bin/systemctl restart lordmaker@8800.service,
 | # | 검사 | 실행 |
 |---|------|------|
 | G1 | ctest 골든 100% | LMCore 구성 |
-| G2 | 서버 pytest 워커 골든 대조(`LORDMAKER_FIXTURES`, 잡 큐 경유 포함) | Server Tests 구성 — 명령은 서버 세션 제공 |
+| G2 | 서버 pytest 워커 골든 대조(`LORDMAKER_FIXTURES`, 잡 큐 경유 포함) | `LORDMAKER_FIXTURES=<fixtures 경로> ./.venv/bin/python -m pytest tests -q` — 기준 **62 passed, skipped 0**. skip이 하나라도 있으면(코어 버전 불일치·픽스처 부재) 게이트 실패 |
 | G3 | 클라 회귀 sweep SHA가 Windows Core Gates 해시와 동일 | 클라 sweep을 리눅스 `.so`로 재현 — 방법은 클라 세션과 확정 |
-| G4 | 시뮬레이터 같은 시드 CSV가 Windows 런과 동일 | 서버 `bots/simulate` CLI — Windows 기준 CSV는 서버 세션이 생성해 전달 |
+| G4 | 시뮬레이터 같은 시드 CSV가 Windows 런과 동일 | `./.venv/bin/python -m bots.simulate --bots 20 --cycles 48 --seed 1 --csv /tmp/sim-linux.csv` → `python tools/compare_sim_csv.py tests/fixtures/sim-gate-seed1-v28.csv /tmp/sim-linux.csv` — exit 0 = 통과(불일치 시 첫 차이 행·열 출력 → 서버 세션). 기준 CSV는 서버 저장소에 포함(`01b9d37`, Rules 28 / Data 23, 960행) — **전환 시점 버전이 28/23과 다르면 서버 세션에 재생성 요청** |
 
 ## 5. Horde 서버 (Docker compose)
 
@@ -256,7 +263,7 @@ horde-redis    redis:alpine (Nextcloud용과 분리)        볼륨 /srv/horde/re
 2. 8800 DB 파일(`lordmaker.db`) 복사 → `/var/lib/lordmaker/8800/` → `PRAGMA quick_check` (정지 상태 복사, WAL 미사용 전제)
 3. `/etc/lordmaker/8800.env` 작성(사용자가 `WORKER_TOKEN` 이전)
 4. Deploy Server(Instance=8800) — 확인 2종 통과
-5. Caddy 업스트림 `host.docker.internal:8800`으로 전환, `/internal/*`·`/v1/debug/*` 차단 확인
+5. Caddy 업스트림 `host.docker.internal:8800`으로 전환, `/internal/*` 차단 확인(`/v1/debug/*`는 미결 6 결정에 따름)
 6. 클라 세션에 통지: 서버 목록 Lan(`192.168.219.180:8800`)·Test(8801) 프로필 주소 갱신
 7. 모바일 데이터로 외부 경로 확인(guest 로그인 → `/v1/compat` 200 → 던전 진입)
 8. 노트북 게임 서버 정리(Horde 워커는 유지)
@@ -270,7 +277,8 @@ horde-redis    redis:alpine (Nextcloud용과 분리)        볼륨 /srv/horde/re
 ## 미결 (확인 필요)
 
 1. **Windows 에이전트 머신**: Engine·Project를 둘 PC, 같은 공유기 안인지(밖이면 VPN), 디스크 용량.
-2. **배포 확인의 디버그 공성**: 8800은 보안상 `ALLOW_DEBUG_SIEGE=0`이 권장인데, 확인 단계는 `POST /v1/debug/sieges`를 쓴다 — localhost 한정 허용인지, 8800에서는 다른 확인으로 대체할지 서버 세션과 확정.
+2. ~~배포 확인의 디버그 공성~~ → **해소(2026-10-16)**: `POST /internal/selfcheck`로 대체(4장 Deploy Server 7단계).
 3. **Horde 이미지 출처**: ghcr 접근 가능 여부.
-4. **G3 실행 방법**: 클라 회귀 sweep을 리눅스 `.so`로 재현하는 명령(클라 세션).
+4. **G3 실행 방법**: 클라 회귀 sweep을 리눅스 `.so`로 재현하는 명령(클라 세션 — 서버 세션이 전달함). G2·G4 명령은 확정(4장 표).
 5. **Android Compile 체크아웃 분리 유지 여부**(Project 에이전트 디스크).
+6. **프록시 `/v1/debug/*` 차단**: 2026-10-07 결정("테스트 기간 차단 안 함")을 이전 시점에 바꿀지 — 사용자 확인.
