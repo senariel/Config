@@ -450,6 +450,8 @@ object FetchSource : BuildType({
             scriptMode = script {
                 content = """
                     ${'$'}ErrorActionPreference = 'Stop'
+                    chcp 65001 | Out-Null   # 출력 UTF-8 — TeamCity 로그 한글 깨짐 방지
+                    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
                     ${'$'}cleanMode = '%CleanMode%'
                     
                     Write-Host "================================================"
@@ -512,6 +514,8 @@ object SyncFork : BuildType({
             scriptMode = script {
                 content = """
                     ${'$'}ErrorActionPreference = 'Stop'
+                    chcp 65001 | Out-Null   # 출력 UTF-8 — TeamCity 로그 한글 깨짐 방지
+                    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
                     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
                     ${'$'}branch = '%SyncBranch%'
                     ${'$'}token  = ${'$'}env:GIT_PUSH_TOKEN

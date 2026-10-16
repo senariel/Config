@@ -107,6 +107,8 @@ object SyncEngine : BuildType({
             scriptMode = script {
                 content = """
 ${'$'}ErrorActionPreference = 'Continue'
+chcp 65001 > ${'$'}null   # 출력 UTF-8 — TeamCity 로그 한글 깨짐 방지(robocopy·git 등 콘솔 프로그램 포함)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 ${'$'}src = ${'$'}env:UE5_DIST_SOURCE
 ${'$'}dst = ${'$'}env:UE5_ENGINE_ROOT
 
@@ -195,6 +197,8 @@ object EditorBuild : BuildType({
                 content = """
 # UBT 컴파일만 (쿡·스테이징 없음). LordMakerEditor / Win64 는 Kotlin에서 치환
 ${'$'}ErrorActionPreference = 'Continue'
+chcp 65001 > ${'$'}null   # 출력 UTF-8 — TeamCity 로그 한글 깨짐 방지(robocopy·git 등 콘솔 프로그램 포함)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 ${'$'}build   = Join-Path ${'$'}env:UE5_ENGINE_ROOT 'Engine\Build\BatchFiles\Build.bat'
 ${'$'}project = Join-Path (Get-Location) 'LordMaker.uproject'
 if (-not (Test-Path ${'$'}build)) { Write-Host "##teamcity[buildProblem description='Installed engine not found: ${'$'}build']"; exit 1 }
@@ -238,6 +242,8 @@ object AndroidCompile : BuildType({
                 content = """
 # UBT 컴파일만 (쿡·스테이징 없음). LordMaker / Android 는 Kotlin에서 치환
 ${'$'}ErrorActionPreference = 'Continue'
+chcp 65001 > ${'$'}null   # 출력 UTF-8 — TeamCity 로그 한글 깨짐 방지(robocopy·git 등 콘솔 프로그램 포함)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 ${'$'}build   = Join-Path ${'$'}env:UE5_ENGINE_ROOT 'Engine\Build\BatchFiles\Build.bat'
 ${'$'}project = Join-Path (Get-Location) 'LordMaker.uproject'
 if (-not (Test-Path ${'$'}build)) { Write-Host "##teamcity[buildProblem description='Installed engine not found: ${'$'}build']"; exit 1 }
@@ -293,6 +299,8 @@ object CoreGates : BuildType({
                 content = """
 # LMSimTest 회귀 게이트 (Tools/core_gates.sh). 실패 = summary의 exit!=0, 기준선 DIFF = 경고만
 ${'$'}ErrorActionPreference = 'Continue'
+chcp 65001 > ${'$'}null   # 출력 UTF-8 — TeamCity 로그 한글 깨짐 방지(robocopy·git 등 콘솔 프로그램 포함)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 ${'$'}bash  = 'C:\Program Files\Git\bin\bash.exe'
 ${'$'}ueCmd = Join-Path ${'$'}env:UE5_ENGINE_ROOT 'Engine\Binaries\Win64\UnrealEditor-Cmd.exe'
 if (-not (Test-Path ${'$'}bash))  { Write-Host "##teamcity[buildProblem description='Git Bash not found: ${'$'}bash']"; exit 1 }
@@ -398,6 +406,8 @@ object Package : BuildType({
                 content = """
 # 주의: PS 5.1에서 Stop + native stderr(2>) 조합은 즉시 예외 → Continue 유지, 종료코드로 판정
 ${'$'}ErrorActionPreference = 'Continue'
+chcp 65001 > ${'$'}null   # 출력 UTF-8 — TeamCity 로그 한글 깨짐 방지(robocopy·git 등 콘솔 프로그램 포함)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 ${'$'}engine  = ${'$'}env:UE5_ENGINE_ROOT
 ${'$'}project = Join-Path (Get-Location) 'LordMaker.uproject'
 ${'$'}archive = Join-Path (Get-Location) 'Archive'
