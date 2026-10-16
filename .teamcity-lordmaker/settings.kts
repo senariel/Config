@@ -9,10 +9,13 @@ import jetbrains.buildServer.configs.kotlin.triggers.vcs
 import jetbrains.buildServer.configs.kotlin.vcs.GitVcsRoot
 
 /*
-DevPub / LordMaker — 게임 CI (Client / Server 하위 프로젝트).
+DevPub / LordMaker — 게임 CI (Client / Server / Device 하위 프로젝트).
 UnrealEngine5(엔진) 설정은 같은 저장소의 .teamcity/ 에 있고, 이 프로젝트는
 Versioned Settings의 settingsPath = .teamcity-lordmaker 로 따로 연결돼 있다.
 설계: docs/superpowers/specs/2026-10-06-lordmaker-ci-structure-design.md
+에이전트 배정: docs/superpowers/specs/2026-10-16-linux-build-machine-design.md
+  - Client = Windows 에이전트(devpub.role=project), Server·Device = 리눅스 에이전트(devpub.role=server, .180 호스트)
+  - 경로 파라미터는 OS가 달라 하위 프로젝트마다 따로 둔다.
 */
 
 version = "2025.11"
@@ -27,15 +30,6 @@ project {
     subProject(Client)
     subProject(Server)
     subProject(Device)
-
-    params {
-        param("env.UE5_ENGINE_ROOT", """D:\Shared\UE5""")
-        // 패키지 최신본(항상 1개, 매 빌드 교체)과 선택적 zip 보관 위치 — 아카이브는 배포 폴더 밖이어야 함(robocopy /MIR)
-        param("env.LM_DIST_PATH", """D:\Shared\LordMaker""")
-        param("env.LM_ARCHIVE_PATH", """D:\Shared\LordMaker_Archives""")
-        param("env.LM_PYTHON", """C:\Program Files\Python314\python.exe""")
-        param("env.VCVARS64", """C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat""")
-    }
 
     features {
         // 빌드 기록 정리: 10일 보관 (UnrealEngine5와 동일)
@@ -87,6 +81,14 @@ object Client : Project({
     buildType(CoreGates)
     buildType(Package)
     buildTypesOrder = arrayListOf(EditorBuild, AndroidCompile, CoreGates, Package)
+
+    // Windows 에이전트 경로 (P5에서 Project 에이전트 확정 시 갱신)
+    params {
+        param("env.UE5_ENGINE_ROOT", """D:\Shared\UE5""")
+        // 패키지 최신본(항상 1개, 매 빌드 교체)과 선택적 zip 보관 위치 — 아카이브는 배포 폴더 밖이어야 함(robocopy /MIR)
+        param("env.LM_DIST_PATH", """D:\Shared\LordMaker""")
+        param("env.LM_ARCHIVE_PATH", """D:\Shared\LordMaker_Archives""")
+    }
 })
 
 object EditorBuild : BuildType({
@@ -128,7 +130,7 @@ Write-Host ">> LordMakerEditor Win64 OK"
     }
 
     requirements {
-        equals("teamcity.agent.name", "Agent_Win64")
+        equals("devpub.role", "project")
     }
 })
 
@@ -177,7 +179,7 @@ Write-Host ">> LordMaker Android OK"
     }
 
     requirements {
-        equals("teamcity.agent.name", "Agent_Win64")
+        equals("devpub.role", "project")
     }
 })
 
@@ -275,7 +277,7 @@ Write-Host (">> Core Gates OK: " + ${'$'}sums.Count + " runs, baseline DIFF " + 
     }
 
     requirements {
-        equals("teamcity.agent.name", "Agent_Win64")
+        equals("devpub.role", "project")
     }
 })
 
@@ -441,8 +443,8 @@ if (${'$'}failed.Count -gt 0) { exit 1 }
     }
 
     requirements {
-        // 설치형 엔진(D:/Shared/UE5)·Android SDK·MSVC 14.50.35717이 있는 머신
-        equals("teamcity.agent.name", "Agent_Win64")
+        // Windows Project 에이전트: 설치형 엔진·Android SDK·MSVC 14.50.35717
+        equals("devpub.role", "project")
     }
 })
 
@@ -450,19 +452,36 @@ if (${'$'}failed.Count -gt 0) { exit 1 }
 
 object Server : Project({
     name = "Server"
-    description = "LMCore(C++ 규칙 코어)·LordMakerServer(Python) — 배포/재시작은 넣지 않음(서버 세션이 수동 관리)"
+    description = "LMCore(C++ 규칙 코어)·LordMakerServer(Python) — 리눅스 에이전트(.180). 배포는 별도(Deploy Server, 설계서 4장)"
 
     buildType(LMCore)
     buildType(ServerTests)
     buildType(StaticDataDrift)
     buildTypesOrder = arrayListOf(LMCore, ServerTests, StaticDataDrift)
+
+    params {
+        // 시스템 Python 3.14 (apt python3.14 + python3.14-venv/-dev). 게임 서버도 같은 인터프리터로 돈다 → lmcore .so ABI 일치
+        param("env.LM_PYTHON", "/usr/bin/python3.14")
+    }
 })
+
+// 리눅스 에이전트 공통: Python 3.14 확인 (없으면 원인을 바로 표시)
+// 스크립트 조각은 val이 아니라 fun — settings.kts는 위에서부터 실행되는 스크립트라, 아래에 선언한 val은 project{} 시점에 아직 비어 있다
+fun pyCheckScript(): String = """
+#!/usr/bin/env bash
+set -uo pipefail
+if ! "%env.LM_PYTHON%" -c 'import sys; sys.exit(0 if sys.version_info[:2]==(3,14) else 1)'; then
+  echo "##teamcity[buildProblem description='Python 3.14 not found at %env.LM_PYTHON% - apt install python3.14 python3.14-venv python3.14-dev on the agent']"
+  exit 1
+fi
+"%env.LM_PYTHON%" --version
+""".trimIndent()
 
 object LMCore : BuildType({
     name = "LMCore"
-    description = "Core/ CMake 빌드 + ctest. 산출물 lmcore.cp314-win_amd64.pyd (Server Tests가 소비)."
+    description = "Core/ CMake 빌드 + ctest (리눅스 gcc). 산출물 lmcore.cpython-314-x86_64-linux-gnu.so (Server Tests·서버 배포가 소비)."
 
-    artifactRules = "build/lmcore*.pyd"
+    artifactRules = "build/lmcore*.so"
 
     vcs {
         // 필요한 경로만 부분 체크아웃 (LFS 대상 콘텐츠 제외)
@@ -479,47 +498,53 @@ object LMCore : BuildType({
         script {
             name = "Python 3.14 check"
             id = "PyCheck"
-            scriptContent = """
-@echo off
-rem Python 3.14 (모든 사용자 설치) 확인 — 없으면 원인을 바로 표시
-if not exist "%env.LM_PYTHON%" goto nopython
-"%env.LM_PYTHON%" -c "import sys; sys.exit(0 if sys.version_info[:2]==(3,14) else 1)" || goto badpython
-"%env.LM_PYTHON%" --version
-exit /b 0
-:nopython
-echo ##teamcity[buildProblem description='Python 3.14 not found: %env.LM_PYTHON% - install Python 3.14.5 for all users on the agent and restart the agent']
-exit /b 1
-:badpython
-echo ##teamcity[buildProblem description='Python at %env.LM_PYTHON% is not 3.14']
-exit /b 1
-            """.trimIndent()
+            scriptContent = pyCheckScript()
         }
         script {
             name = "CMake build + ctest"
             id = "CMake"
             scriptContent = """
-@echo off
-rem LMCore: CMake + Ninja (VS BuildTools 번들) + ctest. 산출물 build\lmcore*.pyd
-set PYTHONUTF8=1
-call "%env.VCVARS64%" >nul || goto novcvars
-where cmake >nul 2>nul || goto nocmake
-where ninja >nul 2>nul || goto nocmake
-cmake --version
-if exist build rmdir /s /q build
-cmake -S Core -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DPython_EXECUTABLE=%env.LM_PYTHON%" || exit /b 1
-cmake --build build || exit /b 1
-ctest --test-dir build --output-on-failure || exit /b 1
-dir /b build\lmcore*.pyd || goto nopyd
-exit /b 0
-:novcvars
-echo ##teamcity[buildProblem description='vcvars64.bat failed: %env.VCVARS64%']
-exit /b 1
-:nocmake
-echo ##teamcity[buildProblem description='cmake/ninja not found after vcvars64 - install the VS BuildTools component C++ CMake tools for Windows']
-exit /b 1
-:nopyd
-echo ##teamcity[buildProblem description='lmcore python module was not produced']
-exit /b 1
+#!/usr/bin/env bash
+# LMCore: CMake + Ninja + ctest. 산출물 build/lmcore*.so
+# FP 결정론 규칙(설계서 2장): Core/CMakeLists.txt의 -ffp-contract=off -fno-fast-math(PUBLIC)를 덮어쓰지 않는다.
+# 추가만 허용: -march=x86-64-v2 고정(native 금지). -Ofast·-ffast-math 계열 금지 — 아래에서 실제 플래그를 검사한다.
+set -euo pipefail
+echo ">> $(g++ --version | head -1)"
+echo ">> $(cmake --version | head -1) / ninja $(ninja --version)"
+rm -rf build
+cmake -S Core -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DPython_EXECUTABLE="%env.LM_PYTHON%" -DCMAKE_CXX_FLAGS=-march=x86-64-v2 \
+      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+# 실제 컴파일 플래그 기록 + 금지 플래그 검사 (결정론 게이트 실패 시 1차 대조 자료)
+"%env.LM_PYTHON%" - <<'EOF'
+import json, shlex, sys
+cmds = json.load(open('build/compile_commands.json'))
+bad = ('-Ofast', '-ffast-math', '-funsafe-math-optimizations', '-fassociative-math',
+       '-freciprocal-math', '-ffinite-math-only', '-ffp-contract=fast', '-m32', '-mfpmath=387', '-march=native')
+seen, problems = set(), []
+for c in cmds:
+    args = c.get('arguments') or shlex.split(c['command'])
+    flags = ' '.join(a for a in args if a.startswith(('-O', '-f', '-m', '-std')))
+    if flags not in seen:
+        seen.add(flags)
+        print('>> flags:', flags)
+    if 'ThirdParty' in c['file']:
+        continue
+    problems += [a for a in args if a in bad]
+    if '-ffp-contract=off' not in args:
+        problems.append('missing -ffp-contract=off in ' + c['file'])
+if problems:
+    print("##teamcity[buildProblem description='LMCore FP determinism flags violated - see log']")
+    for p in sorted(set(problems)):
+        print('>> BAD:', p)
+    sys.exit(1)
+EOF
+cmake --build build
+ctest --test-dir build --output-on-failure
+if ! ls build/lmcore*.so; then
+  echo "##teamcity[buildProblem description='lmcore python module was not produced']"
+  exit 1
+fi
             """.trimIndent()
         }
     }
@@ -535,13 +560,13 @@ exit /b 1
     }
 
     requirements {
-        equals("teamcity.agent.name", "Agent_Win64")
+        equals("devpub.role", "server")
     }
 })
 
 object ServerTests : BuildType({
     name = "Server Tests"
-    description = "LordMakerServer pytest. LMCore 마지막 성공 main의 .pyd + LordMaker Core/tests/fixtures(LORDMAKER_FIXTURES) 사용."
+    description = "LordMakerServer pytest. LMCore 마지막 성공 main의 .so + LordMaker Core/tests/fixtures(LORDMAKER_FIXTURES) 사용."
 
     vcs {
         root(ServerVcs)
@@ -555,34 +580,21 @@ object ServerTests : BuildType({
         script {
             name = "Python 3.14 check"
             id = "PyCheck"
-            scriptContent = """
-@echo off
-rem Python 3.14 (모든 사용자 설치) 확인 — 없으면 원인을 바로 표시
-if not exist "%env.LM_PYTHON%" goto nopython
-"%env.LM_PYTHON%" -c "import sys; sys.exit(0 if sys.version_info[:2]==(3,14) else 1)" || goto badpython
-"%env.LM_PYTHON%" --version
-exit /b 0
-:nopython
-echo ##teamcity[buildProblem description='Python 3.14 not found: %env.LM_PYTHON% - install Python 3.14.5 for all users on the agent and restart the agent']
-exit /b 1
-:badpython
-echo ##teamcity[buildProblem description='Python at %env.LM_PYTHON% is not 3.14']
-exit /b 1
-            """.trimIndent()
+            scriptContent = pyCheckScript()
         }
         script {
             name = "pytest"
             id = "Pytest"
             scriptContent = """
-@echo off
-rem LordMakerServer pytest. lmcore*.pyd = LMCore 아티팩트(체크아웃 루트), fixtures = LordMaker Core/tests/fixtures 부분 체크아웃
-set PYTHONUTF8=1
-set LORDMAKER_FIXTURES=%teamcity.build.checkoutDir%\lordmaker-fixtures\Core\tests\fixtures
-dir /b lmcore*.pyd
-if exist .venv rmdir /s /q .venv
-"%env.LM_PYTHON%" -m venv .venv || exit /b 1
-.venv\Scripts\python -m pip install -q --disable-pip-version-check -e ".[dev]" || exit /b 1
-.venv\Scripts\python -m pytest tests -q -rs --junitxml=test-results.xml
+#!/usr/bin/env bash
+# LordMakerServer pytest. lmcore*.so = LMCore 아티팩트(체크아웃 루트), fixtures = LordMaker Core/tests/fixtures 부분 체크아웃
+set -euo pipefail
+export LORDMAKER_FIXTURES="%teamcity.build.checkoutDir%/lordmaker-fixtures/Core/tests/fixtures"
+ls lmcore*.so
+rm -rf .venv
+"%env.LM_PYTHON%" -m venv .venv
+.venv/bin/python -m pip install -q --disable-pip-version-check -e ".[dev]"
+.venv/bin/python -m pytest tests -q -rs --junitxml=test-results.xml
             """.trimIndent()
         }
     }
@@ -596,7 +608,7 @@ if exist .venv rmdir /s /q .venv
     dependencies {
         artifacts(LMCore) {
             buildRule = lastSuccessful("main")
-            artifactRules = "lmcore*.pyd => ."
+            artifactRules = "lmcore*.so => ."
         }
     }
 
@@ -608,7 +620,7 @@ if exist .venv rmdir /s /q .venv
     }
 
     requirements {
-        equals("teamcity.agent.name", "Agent_Win64")
+        equals("devpub.role", "server")
     }
 })
 
@@ -631,38 +643,24 @@ object StaticDataDrift : BuildType({
         script {
             name = "Python 3.14 check"
             id = "PyCheck"
-            scriptContent = """
-@echo off
-rem Python 3.14 (모든 사용자 설치) 확인 — 없으면 원인을 바로 표시
-if not exist "%env.LM_PYTHON%" goto nopython
-"%env.LM_PYTHON%" -c "import sys; sys.exit(0 if sys.version_info[:2]==(3,14) else 1)" || goto badpython
-"%env.LM_PYTHON%" --version
-exit /b 0
-:nopython
-echo ##teamcity[buildProblem description='Python 3.14 not found: %env.LM_PYTHON% - install Python 3.14.5 for all users on the agent and restart the agent']
-exit /b 1
-:badpython
-echo ##teamcity[buildProblem description='Python at %env.LM_PYTHON% is not 3.14']
-exit /b 1
-            """.trimIndent()
+            scriptContent = pyCheckScript()
         }
         script {
             name = "check_static_drift.py"
             id = "Drift"
             scriptContent = """
-@echo off
-rem 정적 데이터 드리프트: 0=일치, 1=드리프트, 2=체크아웃/경로 문제
-set PYTHONUTF8=1
-"%env.LM_PYTHON%" server\tools\check_static_drift.py --client client --server server
-if errorlevel 2 goto checkout
-if errorlevel 1 goto drift
-exit /b 0
-:drift
-echo ##teamcity[buildProblem description='Static data drift between LordMaker and LordMakerServer - see log']
-exit /b 1
-:checkout
-echo ##teamcity[buildProblem description='Drift check could not read checkouts - partial checkout rules broken?']
-exit /b 1
+#!/usr/bin/env bash
+# 정적 데이터 드리프트: 0=일치, 1=드리프트, 2=체크아웃/경로 문제
+set -uo pipefail
+"%env.LM_PYTHON%" server/tools/check_static_drift.py --client client --server server
+rc=$?
+if [ "${'$'}rc" -ge 2 ]; then
+  echo "##teamcity[buildProblem description='Drift check could not read checkouts - partial checkout rules broken?']"
+  exit 1
+elif [ "${'$'}rc" -eq 1 ]; then
+  echo "##teamcity[buildProblem description='Static data drift between LordMaker and LordMakerServer - see log']"
+  exit 1
+fi
             """.trimIndent()
         }
     }
@@ -680,7 +678,7 @@ exit /b 1
     }
 
     requirements {
-        equals("teamcity.agent.name", "Agent_Win64")
+        equals("devpub.role", "server")
     }
 })
 
@@ -688,13 +686,92 @@ exit /b 1
 
 object Device : Project({
     name = "Device"
-    description = "테스트 기기(Android) 등록·배포 — Wi-Fi adb(무선 디버깅), 수동 실행. 설치는 에이전트(AYA-ZZANG)의 adb."
+    description = "테스트 기기(Android) 등록·배포·로그 — Wi-Fi adb(무선 디버깅), 수동 실행. 리눅스 에이전트(.180)의 adb."
 
     buildType(RegisterDevice)
     buildType(DeployToDevice)
     buildType(CollectDeviceLogs)
     buildTypesOrder = arrayListOf(RegisterDevice, DeployToDevice, CollectDeviceLogs)
+
+    params {
+        // Google platform-tools zip을 /opt/android에 설치 (Wi-Fi 페어링 때문에 최신판)
+        param("env.ADB", "/opt/android/platform-tools/adb")
+        // Package 최신본 — Windows Project 에이전트가 samba(\\192.168.219.180\Shared)로 쓰고, 여기서는 로컬로 읽는다
+        param("env.LM_DIST_PATH", "/mnt/d/Shared/LordMaker")
+    }
 })
+
+// adb 공통 (Register/Deploy/Collect 앞부분) — bash
+// adb shell은 stdin을 읽으므로 while-read 루프 안에서 부르는 adb는 반드시 </dev/null (adbq가 처리)
+fun adbCommon(): String = """
+#!/usr/bin/env bash
+set -uo pipefail
+ADB="%env.ADB%"
+if [ ! -x "${'$'}ADB" ]; then
+  echo "##teamcity[buildProblem description='adb not found at %env.ADB% on the agent']"
+  exit 1
+fi
+adbq() { "${'$'}ADB" "${'$'}@" </dev/null 2>&1 | tr -d '\r'; }
+
+show_adb_server_log() {
+  # adb 서버는 시작 시점의 TMPDIR(이전 빌드의 buildTmp일 수 있음) 또는 /tmp에 adb.<uid>.log를 쓴다
+  local f
+  for f in "${'$'}{TMPDIR:-/tmp}/adb.$(id -u).log" "/tmp/adb.$(id -u).log"; do
+    if [ -f "${'$'}f" ]; then
+      echo ">> adb server log (tail): ${'$'}f"
+      tail -n 40 "${'$'}f" | sed 's/^/   /'
+      return
+    fi
+  done
+}
+
+restart_adb_server() {
+  adbq kill-server >/dev/null
+  sleep 1
+  adbq start-server >/dev/null
+}
+
+echo ">> $(adbq version | head -2 | tr '\n' ' ')"
+adbq start-server >/dev/null
+
+connect_wireless_devices() {
+  # mDNS로 찾은 무선 디버깅 연결 엔드포인트(_adb-tls-connect)에 연결. 페어링된 기기만 성공한다.
+  local manual="${'$'}1" found=0 line ep re='_adb-tls-connect\._tcp\.?[[:space:]]+([^[:space:]]+:[0-9]+)'
+  while IFS= read -r line; do
+    if [[ "${'$'}line" =~ ${'$'}re ]]; then
+      found=$((found + 1))
+      ep="${'$'}{BASH_REMATCH[1]}"
+      echo ">> adb connect ${'$'}ep : $(adbq connect "${'$'}ep")"
+    fi
+  done < <(adbq mdns services)
+  if [ -n "${'$'}manual" ]; then
+    echo ">> adb connect ${'$'}manual (수동) : $(adbq connect "${'$'}manual")"
+  fi
+  if [ "${'$'}found" -eq 0 ] && [ -z "${'$'}manual" ]; then
+    echo '>> mDNS에서 무선 디버깅 기기를 찾지 못함 (무선 디버깅 꺼짐 / 다른 서브넷 / 방화벽의 mDNS 차단). ConnectAddress로 직접 지정 가능.'
+  fi
+  sleep 2
+}
+
+# 연결된 기기 목록 → 배열 DEV_SERIAL / DEV_MODEL / DEV_HW
+# 같은 기기가 mDNS 이름과 IP:포트 두 줄로 보일 수 있어 ro.serialno로 중복 제거. 필터(모델·시리얼 일부, 대소문자 무시) 적용
+get_online_devices() {
+  local filter="${'$'}{1:-}" serial state rest model hw re='model:([^[:space:]]+)'
+  local -A seen=()
+  DEV_SERIAL=(); DEV_MODEL=(); DEV_HW=()
+  while read -r serial state rest; do
+    [ "${'$'}state" = "device" ] || continue
+    model=unknown
+    if [[ "${'$'}rest" =~ ${'$'}re ]]; then model="${'$'}{BASH_REMATCH[1]}"; fi
+    hw="$(adbq -s "${'$'}serial" shell getprop ro.serialno)"
+    [ -n "${'$'}hw" ] || hw="${'$'}serial"
+    [ -z "${'$'}{seen[${'$'}hw]:-}" ] || continue
+    seen[${'$'}hw]=1
+    if [ -n "${'$'}filter" ] && [[ "${'$'}{model,,}" != *"${'$'}{filter,,}"* ]] && [[ "${'$'}{hw,,}" != *"${'$'}{filter,,}"* ]]; then continue; fi
+    DEV_SERIAL+=("${'$'}serial"); DEV_MODEL+=("${'$'}model"); DEV_HW+=("${'$'}hw")
+  done < <(adbq devices -l | tail -n +2)
+}
+""".trimIndent()
 
 object RegisterDevice : BuildType({
     name = "Register Device"
@@ -710,128 +787,62 @@ object RegisterDevice : BuildType({
     }
 
     steps {
-        powerShell {
+        script {
             name = "adb pair"
             id = "Pair"
-            scriptMode = script {
-                content = """
-# --- adb 공통 (Register/Deploy 앞부분에 삽입) ---
-${'$'}ErrorActionPreference = 'Continue'
-${'$'}adb = Join-Path ${'$'}env:ANDROID_HOME 'platform-tools\adb.exe'
-if (-not ${'$'}env:ANDROID_HOME -or -not (Test-Path ${'$'}adb)) { Write-Host "##teamcity[buildProblem description='adb not found under ANDROID_HOME on the agent']"; exit 1 }
-function Invoke-Adb([string[]]${'$'}adbArgs) {
-    # 네이티브 stderr를 문자열로 합쳐 반환 (PS 5.1 ErrorRecord 장식 제거)
-    ${'$'}lines = & ${'$'}adb @adbArgs 2>&1 | ForEach-Object { "${'$'}_" }
-    return (${'$'}lines -join "`n")
-}
+            scriptContent = adbCommon() + "\n" + """
+# --- Register Device: adb pair (기기당 1회, 페어링 키는 에이전트 계정의 ~/.android에 영구 저장) ---
+addr="$(printf '%%s' '%PairAddress%' | tr -d '[:space:]')"
+code="$(printf '%%s' '%PairCode%' | tr -d '[:space:]')"
+if [[ ! "${'$'}addr" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]+${'$'} ]]; then
+  echo "##teamcity[buildProblem description='PairAddress must be IP:port from the phone pairing dialog']"; exit 1
+fi
+if [[ ! "${'$'}code" =~ ^[0-9]{6}${'$'} ]]; then
+  echo "##teamcity[buildProblem description='PairCode must be the 6-digit Wi-Fi pairing code']"; exit 1
+fi
 
-function Show-AdbServerLog {
-    # adb 서버는 시작 시점의 TEMP(= 에이전트 buildTmp)에 adb.log를 쓴다
-    ${'$'}log = Join-Path ${'$'}env:TEMP 'adb.log'
-    if (Test-Path ${'$'}log) {
-        Write-Host '>> adb server log (tail):'
-        Get-Content ${'$'}log -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('   ' + ${'$'}_) }
-    }
-}
-
-function Restart-AdbServer {
-    ${'$'}null = Invoke-Adb @('kill-server')
-    Start-Sleep -Seconds 1
-    ${'$'}null = Invoke-Adb @('start-server')
-}
-
-Write-Host ('>> ' + ((Invoke-Adb @('version')) -split "`n" | Select-Object -First 2) -join ' / ')
-${'$'}null = Invoke-Adb @('start-server')
-
-function Connect-WirelessDevices([string]${'$'}manualAddress) {
-    # mDNS로 찾은 무선 디버깅 연결 엔드포인트(_adb-tls-connect)에 연결. 페어링된 기기만 성공한다.
-    ${'$'}svc = Invoke-Adb @('mdns', 'services')
-    ${'$'}found = 0
-    foreach (${'$'}l in (${'$'}svc -split "`n")) {
-        if (${'$'}l -match '_adb-tls-connect\._tcp\.?\s+(\S+:\d+)') {
-            ${'$'}found++
-            ${'$'}r = Invoke-Adb @('connect', ${'$'}Matches[1])
-            Write-Host (">> adb connect " + ${'$'}Matches[1] + " : " + ${'$'}r.Trim())
-        }
-    }
-    if (${'$'}manualAddress) {
-        ${'$'}r = Invoke-Adb @('connect', ${'$'}manualAddress)
-        Write-Host (">> adb connect " + ${'$'}manualAddress + " (수동) : " + ${'$'}r.Trim())
-    }
-    if (${'$'}found -eq 0 -and -not ${'$'}manualAddress) {
-        Write-Host '>> mDNS에서 무선 디버깅 기기를 찾지 못함 (무선 디버깅 꺼짐 / 다른 서브넷 / 방화벽의 mDNS 차단). ConnectAddress로 직접 지정 가능.'
-    }
-    Start-Sleep -Seconds 2
-}
-
-function Get-OnlineDevices {
-    # 같은 기기가 mDNS 이름과 IP:포트 두 줄로 보일 수 있어 ro.serialno로 중복 제거
-    ${'$'}list = @()
-    ${'$'}seen = @{}
-    foreach (${'$'}l in ((Invoke-Adb @('devices', '-l')) -split "`n" | Select-Object -Skip 1)) {
-        if (${'$'}l -notmatch '^(\S+)\s+device\b') { continue }
-        ${'$'}serial = ${'$'}Matches[1]
-        ${'$'}model = 'unknown'
-        if (${'$'}l -match 'model:(\S+)') { ${'$'}model = ${'$'}Matches[1] }
-        ${'$'}hw = (Invoke-Adb @('-s', ${'$'}serial, 'shell', 'getprop', 'ro.serialno')).Trim()
-        if (-not ${'$'}hw) { ${'$'}hw = ${'$'}serial }
-        if (${'$'}seen.ContainsKey(${'$'}hw)) { continue }
-        ${'$'}seen[${'$'}hw] = ${'$'}true
-        ${'$'}list += [pscustomobject]@{ Serial = ${'$'}serial; Model = ${'$'}model; HwSerial = ${'$'}hw }
-    }
-    return ,${'$'}list
-}
-
-# --- Register Device: adb pair (기기당 1회, 페어링 키는 에이전트 adb에 영구 저장) ---
-${'$'}addr = '%PairAddress%'.Trim()
-${'$'}code = '%PairCode%'.Trim()
-if (${'$'}addr -notmatch '^\d{1,3}(\.\d{1,3}){3}:\d+${'$'}') { Write-Host "##teamcity[buildProblem description='PairAddress must be IP:port from the phone pairing dialog']"; exit 1 }
-if (${'$'}code -notmatch '^\d{6}${'$'}') { Write-Host "##teamcity[buildProblem description='PairCode must be the 6-digit Wi-Fi pairing code']"; exit 1 }
-
-${'$'}r = Invoke-Adb @('pair', ${'$'}addr, ${'$'}code)
-Write-Host (">> adb pair " + ${'$'}addr + " : " + ${'$'}r.Trim())
-if (${'$'}r -match 'protocol fault') {
-    # 클라이언트가 adb 서버(5037)의 응답을 못 받음 = 서버 쪽 문제(이전 빌드의 오래된 서버 등) → 서버 재시작 후 같은 코드로 1회 재시도
-    Show-AdbServerLog
-    Write-Host '>> adb server restart + retry'
-    Restart-AdbServer
-    ${'$'}r = Invoke-Adb @('pair', ${'$'}addr, ${'$'}code)
-    Write-Host (">> adb pair (retry) " + ${'$'}addr + " : " + ${'$'}r.Trim())
-}
-if (${'$'}r -notmatch 'Successfully paired') {
-    Show-AdbServerLog
-    ${'$'}tail = Get-Content (Join-Path ${'$'}env:TEMP 'adb.log') -Tail 5 -ErrorAction SilentlyContinue | Out-String
-    if (${'$'}tail -match 'Handshake failed') {
-        # 연결은 됐는데 TLS 핸드셰이크 즉시 실패 = 페어링 서비스가 아닌 포트(무선 디버깅 메인 화면의 연결 포트)일 가능성이 큼
-        Write-Host "##teamcity[buildProblem description='Pairing TLS handshake failed - use the IP:port shown inside the Pair device with pairing code popup, not the main Wireless debugging screen']"
-        exit 1
-    }
-    Write-Host "##teamcity[buildProblem description='adb pair failed - code expired (1-2 min), wrong address, or phone on another subnet']"
+r="$(adbq pair "${'$'}addr" "${'$'}code")"
+echo ">> adb pair ${'$'}addr : ${'$'}r"
+if [[ "${'$'}r" == *"protocol fault"* ]]; then
+  # 클라이언트가 adb 서버(5037)의 응답을 못 받음 = 서버 쪽 문제(이전 빌드의 오래된 서버 등) → 서버 재시작 후 같은 코드로 1회 재시도
+  show_adb_server_log
+  echo '>> adb server restart + retry'
+  restart_adb_server
+  r="$(adbq pair "${'$'}addr" "${'$'}code")"
+  echo ">> adb pair (retry) ${'$'}addr : ${'$'}r"
+fi
+if [[ "${'$'}r" != *"Successfully paired"* ]]; then
+  show_adb_server_log
+  if grep -qs 'Handshake failed' "${'$'}{TMPDIR:-/tmp}/adb.$(id -u).log" "/tmp/adb.$(id -u).log"; then
+    # 연결은 됐는데 TLS 핸드셰이크 즉시 실패 = 페어링 서비스가 아닌 포트(무선 디버깅 메인 화면의 연결 포트)일 가능성이 큼
+    echo "##teamcity[buildProblem description='Pairing TLS handshake failed - use the IP:port shown inside the Pair device with pairing code popup, not the main Wireless debugging screen']"
     exit 1
-}
+  fi
+  echo "##teamcity[buildProblem description='adb pair failed - code expired (1-2 min), wrong address, or phone on another subnet']"
+  exit 1
+fi
 
-Connect-WirelessDevices ''
-${'$'}devices = Get-OnlineDevices
-Write-Host ">> 현재 연결된 기기:"
-foreach (${'$'}d in ${'$'}devices) { Write-Host ("   " + ${'$'}d.Model + "  serial=" + ${'$'}d.HwSerial + "  (" + ${'$'}d.Serial + ")") }
-Write-Host ">> 페어링 완료. 이제 Deploy to Device로 설치할 수 있습니다 (휴대폰의 무선 디버깅이 켜져 있어야 함)."
-                """.trimIndent()
-            }
+connect_wireless_devices ''
+get_online_devices
+echo ">> 현재 연결된 기기:"
+for i in "${'$'}{!DEV_SERIAL[@]}"; do echo "   ${'$'}{DEV_MODEL[${'$'}i]}  serial=${'$'}{DEV_HW[${'$'}i]}  (${'$'}{DEV_SERIAL[${'$'}i]})"; done
+echo ">> 페어링 완료. 이제 Deploy to Device로 설치할 수 있습니다 (휴대폰의 무선 디버깅이 켜져 있어야 함)."
+            """.trimIndent()
         }
     }
 
     requirements {
-        equals("teamcity.agent.name", "Agent_Win64")
+        equals("devpub.role", "server")
     }
 })
 
 object DeployToDevice : BuildType({
     name = "Deploy to Device"
-    description = "Package 최신 APK(D:/Shared/LordMaker/Android)를 연결된 테스트 기기에 install -r. 기기 ID는 앱이 스스로 만든다(주입 안 함)."
+    description = "Package 최신 APK(/mnt/d/Shared/LordMaker/Android)를 연결된 테스트 기기에 install -r. 기기 ID는 앱이 스스로 만든다(주입 안 함)."
 
     params {
         text("ApkDir", "", label = "APK 폴더 (선택)",
-                description = "비우면 Package 최신본 D:/Shared/LordMaker/Android. 아카이브를 풀어 둔 폴더 등 다른 빌드를 설치할 때 지정",
+                description = "비우면 Package 최신본 /mnt/d/Shared/LordMaker/Android. 아카이브를 풀어 둔 폴더 등 다른 빌드를 설치할 때 지정",
                 display = ParameterDisplay.NORMAL, allowEmpty = true)
         text("DeviceFilter", "", label = "대상 기기 필터",
                 description = "모델명 또는 시리얼 일부. 비우면 연결된 테스트 기기 전부",
@@ -845,141 +856,74 @@ object DeployToDevice : BuildType({
     }
 
     steps {
-        powerShell {
+        script {
             name = "Install (+ launch)"
             id = "Deploy"
-            scriptMode = script {
-                content = """
-# --- adb 공통 (Register/Deploy 앞부분에 삽입) ---
-${'$'}ErrorActionPreference = 'Continue'
-${'$'}adb = Join-Path ${'$'}env:ANDROID_HOME 'platform-tools\adb.exe'
-if (-not ${'$'}env:ANDROID_HOME -or -not (Test-Path ${'$'}adb)) { Write-Host "##teamcity[buildProblem description='adb not found under ANDROID_HOME on the agent']"; exit 1 }
-function Invoke-Adb([string[]]${'$'}adbArgs) {
-    # 네이티브 stderr를 문자열로 합쳐 반환 (PS 5.1 ErrorRecord 장식 제거)
-    ${'$'}lines = & ${'$'}adb @adbArgs 2>&1 | ForEach-Object { "${'$'}_" }
-    return (${'$'}lines -join "`n")
-}
-
-function Show-AdbServerLog {
-    # adb 서버는 시작 시점의 TEMP(= 에이전트 buildTmp)에 adb.log를 쓴다
-    ${'$'}log = Join-Path ${'$'}env:TEMP 'adb.log'
-    if (Test-Path ${'$'}log) {
-        Write-Host '>> adb server log (tail):'
-        Get-Content ${'$'}log -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('   ' + ${'$'}_) }
-    }
-}
-
-function Restart-AdbServer {
-    ${'$'}null = Invoke-Adb @('kill-server')
-    Start-Sleep -Seconds 1
-    ${'$'}null = Invoke-Adb @('start-server')
-}
-
-Write-Host ('>> ' + ((Invoke-Adb @('version')) -split "`n" | Select-Object -First 2) -join ' / ')
-${'$'}null = Invoke-Adb @('start-server')
-
-function Connect-WirelessDevices([string]${'$'}manualAddress) {
-    # mDNS로 찾은 무선 디버깅 연결 엔드포인트(_adb-tls-connect)에 연결. 페어링된 기기만 성공한다.
-    ${'$'}svc = Invoke-Adb @('mdns', 'services')
-    ${'$'}found = 0
-    foreach (${'$'}l in (${'$'}svc -split "`n")) {
-        if (${'$'}l -match '_adb-tls-connect\._tcp\.?\s+(\S+:\d+)') {
-            ${'$'}found++
-            ${'$'}r = Invoke-Adb @('connect', ${'$'}Matches[1])
-            Write-Host (">> adb connect " + ${'$'}Matches[1] + " : " + ${'$'}r.Trim())
-        }
-    }
-    if (${'$'}manualAddress) {
-        ${'$'}r = Invoke-Adb @('connect', ${'$'}manualAddress)
-        Write-Host (">> adb connect " + ${'$'}manualAddress + " (수동) : " + ${'$'}r.Trim())
-    }
-    if (${'$'}found -eq 0 -and -not ${'$'}manualAddress) {
-        Write-Host '>> mDNS에서 무선 디버깅 기기를 찾지 못함 (무선 디버깅 꺼짐 / 다른 서브넷 / 방화벽의 mDNS 차단). ConnectAddress로 직접 지정 가능.'
-    }
-    Start-Sleep -Seconds 2
-}
-
-function Get-OnlineDevices {
-    # 같은 기기가 mDNS 이름과 IP:포트 두 줄로 보일 수 있어 ro.serialno로 중복 제거
-    ${'$'}list = @()
-    ${'$'}seen = @{}
-    foreach (${'$'}l in ((Invoke-Adb @('devices', '-l')) -split "`n" | Select-Object -Skip 1)) {
-        if (${'$'}l -notmatch '^(\S+)\s+device\b') { continue }
-        ${'$'}serial = ${'$'}Matches[1]
-        ${'$'}model = 'unknown'
-        if (${'$'}l -match 'model:(\S+)') { ${'$'}model = ${'$'}Matches[1] }
-        ${'$'}hw = (Invoke-Adb @('-s', ${'$'}serial, 'shell', 'getprop', 'ro.serialno')).Trim()
-        if (-not ${'$'}hw) { ${'$'}hw = ${'$'}serial }
-        if (${'$'}seen.ContainsKey(${'$'}hw)) { continue }
-        ${'$'}seen[${'$'}hw] = ${'$'}true
-        ${'$'}list += [pscustomobject]@{ Serial = ${'$'}serial; Model = ${'$'}model; HwSerial = ${'$'}hw }
-    }
-    return ,${'$'}list
-}
-
+            scriptContent = adbCommon() + "\n" + """
 # --- Deploy to Device: 연결 → install -r → (옵션) 실행·로그인 deviceId 참고 출력 ---
 # 기기 ID(계정)는 배포 도구가 정하지 않는다 — 앱 첫 실행 때 엔진이 무작위 ID를 만들어 내부 저장소에 저장하고,
 # install -r 해도 유지된다(사용자 결정, 2026-10-07). 그래서 ID 주입·검증 단계는 없다.
-${'$'}pkg       = 'com.devpub.lordmaker'
-${'$'}filter    = '%DeviceFilter%'.Trim()
-${'$'}launch    = '%LaunchAfterInstall%' -eq 'true'
+pkg='com.devpub.lordmaker'
+launch='%LaunchAfterInstall%'
 
-# APK 위치 = Package가 교체해 두는 최신 배포 폴더(LM_DIST_PATH\Android). 다른 폴더(풀어 둔 아카이브 등)는 ApkDir로 지정
-${'$'}apkDir = '%ApkDir%'.Trim()
-if (-not ${'$'}apkDir) { ${'$'}apkDir = Join-Path ${'$'}env:LM_DIST_PATH 'Android' }
-${'$'}apk = Get-ChildItem ${'$'}apkDir -Filter '*.apk' -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not ${'$'}apk) { Write-Host "##teamcity[buildProblem description='No APK in ${'$'}apkDir - run Package (Android) first']"; exit 1 }
-Write-Host (">> APK: " + ${'$'}apk.FullName + " (" + [math]::Round(${'$'}apk.Length / 1MB, 1) + " MB)")
-${'$'}infoFile = Join-Path ${'$'}apkDir 'BUILD_INFO.txt'
-if (Test-Path ${'$'}infoFile) { Get-Content ${'$'}infoFile | ForEach-Object { Write-Host ("   " + ${'$'}_) } }
+# APK 위치 = Package가 교체해 두는 최신 배포 폴더(LM_DIST_PATH/Android). 다른 폴더(풀어 둔 아카이브 등)는 ApkDir로 지정
+apkDir='%ApkDir%'
+[ -n "${'$'}apkDir" ] || apkDir="%env.LM_DIST_PATH%/Android"
+apk="$(ls -1 "${'$'}apkDir"/*.apk 2>/dev/null | head -1)"
+if [ -z "${'$'}apk" ]; then
+  echo "##teamcity[buildProblem description='No APK in ${'$'}apkDir - run Package (Android) first']"; exit 1
+fi
+echo ">> APK: ${'$'}apk ($(du -m "${'$'}apk" | cut -f1) MB)"
+# BUILD_INFO.txt는 Windows 에이전트가 쓴다(CRLF)
+if [ -f "${'$'}apkDir/BUILD_INFO.txt" ]; then tr -d '\r' < "${'$'}apkDir/BUILD_INFO.txt" | sed 's/^/   /'; fi
 
-${'$'}manualAddress = '%ConnectAddress%'.Trim()
-Connect-WirelessDevices ${'$'}manualAddress
-${'$'}devices = Get-OnlineDevices
-if (${'$'}filter) { ${'$'}devices = @(${'$'}devices | Where-Object { ${'$'}_.Model -like "*${'$'}filter*" -or ${'$'}_.HwSerial -like "*${'$'}filter*" }) }
-if (${'$'}devices.Count -eq 0) {
-    Write-Host "##teamcity[buildProblem description='No connected test device - turn on Wireless debugging, same subnet as the agent, Register Device first']"
-    exit 1
-}
+connect_wireless_devices '%ConnectAddress%'
+get_online_devices '%DeviceFilter%'
+if [ "${'$'}{#DEV_SERIAL[@]}" -eq 0 ]; then
+  echo "##teamcity[buildProblem description='No connected test device - turn on Wireless debugging, same subnet as the agent, Register Device first']"
+  exit 1
+fi
 
-${'$'}failed = @()
-foreach (${'$'}d in ${'$'}devices) {
-    ${'$'}s = ${'$'}d.Serial
-    ${'$'}label = ${'$'}d.Model + ' ' + ${'$'}d.HwSerial
-    Write-Host "##teamcity[blockOpened name='${'$'}label']"
+failed=0
+for i in "${'$'}{!DEV_SERIAL[@]}"; do
+  s="${'$'}{DEV_SERIAL[${'$'}i]}"
+  label="${'$'}{DEV_MODEL[${'$'}i]} ${'$'}{DEV_HW[${'$'}i]}"
+  echo "##teamcity[blockOpened name='${'$'}label']"
 
-    ${'$'}ok = ${'$'}true
-    ${'$'}r = Invoke-Adb @('-s', ${'$'}s, 'install', '-r', ${'$'}apk.FullName)
-    Write-Host (">> install: " + ${'$'}r.Trim())
-    if (${'$'}r -notmatch 'Success') { ${'$'}ok = ${'$'}false; Write-Host '>> 설치 실패' }
+  ok=1
+  r="$(adbq -s "${'$'}s" install -r "${'$'}apk")"
+  echo ">> install: ${'$'}r"
+  if [[ "${'$'}r" != *Success* ]]; then ok=0; echo '>> 설치 실패'; fi
 
-    if (${'$'}ok -and ${'$'}launch) {
-        ${'$'}null = Invoke-Adb @('-s', ${'$'}s, 'logcat', '-c')
-        ${'$'}null = Invoke-Adb @('-s', ${'$'}s, 'shell', 'monkey', '-p', ${'$'}pkg, '-c', 'android.intent.category.LAUNCHER', '1')
-        # 로그인 deviceId는 판정 없이 참고용으로만 출력 (최대 60초 대기)
-        ${'$'}ids = @()
-        for (${'$'}i = 0; ${'$'}i -lt 30 -and ${'$'}ids.Count -eq 0; ${'$'}i++) {
-            Start-Sleep -Seconds 2
-            ${'$'}log = Invoke-Adb @('-s', ${'$'}s, 'logcat', '-d')
-            # 게임 로그인 줄(LogLMLogin)만 — 시스템 로그에도 'deviceId=14' 같은 줄이 많다
-            ${'$'}ids = @([regex]::Matches(${'$'}log, 'LogLMLogin[^\r\n]*deviceId=([A-Za-z0-9._:-]+)') | ForEach-Object { ${'$'}_.Groups[1].Value } | Select-Object -Unique)
-        }
-        if (${'$'}ids.Count -gt 0) { Write-Host (">> 로그인 deviceId (참고): " + (${'$'}ids -join ', ')) }
-        else { Write-Host '>> 60초 안에 로그인 deviceId 로그가 보이지 않음 (참고) — 문제면 Collect Device Logs 실행' }
-    }
+  if [ "${'$'}ok" -eq 1 ] && [ "${'$'}launch" = "true" ]; then
+    adbq -s "${'$'}s" logcat -c >/dev/null
+    adbq -s "${'$'}s" shell monkey -p "${'$'}pkg" -c android.intent.category.LAUNCHER 1 >/dev/null
+    # 로그인 deviceId는 판정 없이 참고용으로만 출력 (최대 60초 대기)
+    # 게임 로그인 줄(LogLMLogin)만 — 시스템 로그에도 'deviceId=14' 같은 줄이 많다
+    ids=''
+    for _ in $(seq 1 30); do
+      sleep 2
+      ids="$(adbq -s "${'$'}s" logcat -d | grep -oE 'LogLMLogin.*deviceId=[A-Za-z0-9._:-]+' | sed 's/.*deviceId=//' | sort -u | paste -sd, -)"
+      [ -z "${'$'}ids" ] || break
+    done
+    if [ -n "${'$'}ids" ]; then echo ">> 로그인 deviceId (참고): ${'$'}ids"
+    else echo '>> 60초 안에 로그인 deviceId 로그가 보이지 않음 (참고) — 문제면 Collect Device Logs 실행'; fi
+  fi
 
-    Write-Host "##teamcity[blockClosed name='${'$'}label']"
-    if (-not ${'$'}ok) { ${'$'}failed += ${'$'}d.Model; Write-Host "##teamcity[buildProblem description='Deploy failed on ${'$'}label' identity='deploy_${'$'}(${'$'}d.HwSerial)']" }
-}
-if (${'$'}failed.Count -gt 0) { exit 1 }
-Write-Host (">> 배포 완료: " + ${'$'}devices.Count + "대")
-                """.trimIndent()
-            }
+  echo "##teamcity[blockClosed name='${'$'}label']"
+  if [ "${'$'}ok" -eq 0 ]; then
+    failed=$((failed + 1))
+    echo "##teamcity[buildProblem description='Deploy failed on ${'$'}label' identity='deploy_${'$'}{DEV_HW[${'$'}i]}']"
+  fi
+done
+[ "${'$'}failed" -eq 0 ] || exit 1
+echo ">> 배포 완료: ${'$'}{#DEV_SERIAL[@]}대"
+            """.trimIndent()
         }
     }
 
     requirements {
-        equals("teamcity.agent.name", "Agent_Win64")
+        equals("devpub.role", "server")
     }
 })
 
@@ -999,138 +943,64 @@ object CollectDeviceLogs : BuildType({
     }
 
     steps {
-        powerShell {
+        script {
             name = "Collect logcat + UE logs"
             id = "Collect"
-            scriptMode = script {
-                content = """
-# --- adb 공통 (Register/Deploy 앞부분에 삽입) ---
-${'$'}ErrorActionPreference = 'Continue'
-${'$'}adb = Join-Path ${'$'}env:ANDROID_HOME 'platform-tools\adb.exe'
-if (-not ${'$'}env:ANDROID_HOME -or -not (Test-Path ${'$'}adb)) { Write-Host "##teamcity[buildProblem description='adb not found under ANDROID_HOME on the agent']"; exit 1 }
-function Invoke-Adb([string[]]${'$'}adbArgs) {
-    # 네이티브 stderr를 문자열로 합쳐 반환 (PS 5.1 ErrorRecord 장식 제거)
-    ${'$'}lines = & ${'$'}adb @adbArgs 2>&1 | ForEach-Object { "${'$'}_" }
-    return (${'$'}lines -join "`n")
-}
-
-function Show-AdbServerLog {
-    # adb 서버는 시작 시점의 TEMP(= 에이전트 buildTmp)에 adb.log를 쓴다
-    ${'$'}log = Join-Path ${'$'}env:TEMP 'adb.log'
-    if (Test-Path ${'$'}log) {
-        Write-Host '>> adb server log (tail):'
-        Get-Content ${'$'}log -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('   ' + ${'$'}_) }
-    }
-}
-
-function Restart-AdbServer {
-    ${'$'}null = Invoke-Adb @('kill-server')
-    Start-Sleep -Seconds 1
-    ${'$'}null = Invoke-Adb @('start-server')
-}
-
-Write-Host ('>> ' + ((Invoke-Adb @('version')) -split "`n" | Select-Object -First 2) -join ' / ')
-${'$'}null = Invoke-Adb @('start-server')
-
-function Connect-WirelessDevices([string]${'$'}manualAddress) {
-    # mDNS로 찾은 무선 디버깅 연결 엔드포인트(_adb-tls-connect)에 연결. 페어링된 기기만 성공한다.
-    ${'$'}svc = Invoke-Adb @('mdns', 'services')
-    ${'$'}found = 0
-    foreach (${'$'}l in (${'$'}svc -split "`n")) {
-        if (${'$'}l -match '_adb-tls-connect\._tcp\.?\s+(\S+:\d+)') {
-            ${'$'}found++
-            ${'$'}r = Invoke-Adb @('connect', ${'$'}Matches[1])
-            Write-Host (">> adb connect " + ${'$'}Matches[1] + " : " + ${'$'}r.Trim())
-        }
-    }
-    if (${'$'}manualAddress) {
-        ${'$'}r = Invoke-Adb @('connect', ${'$'}manualAddress)
-        Write-Host (">> adb connect " + ${'$'}manualAddress + " (수동) : " + ${'$'}r.Trim())
-    }
-    if (${'$'}found -eq 0 -and -not ${'$'}manualAddress) {
-        Write-Host '>> mDNS에서 무선 디버깅 기기를 찾지 못함 (무선 디버깅 꺼짐 / 다른 서브넷 / 방화벽의 mDNS 차단). ConnectAddress로 직접 지정 가능.'
-    }
-    Start-Sleep -Seconds 2
-}
-
-function Get-OnlineDevices {
-    # 같은 기기가 mDNS 이름과 IP:포트 두 줄로 보일 수 있어 ro.serialno로 중복 제거
-    ${'$'}list = @()
-    ${'$'}seen = @{}
-    foreach (${'$'}l in ((Invoke-Adb @('devices', '-l')) -split "`n" | Select-Object -Skip 1)) {
-        if (${'$'}l -notmatch '^(\S+)\s+device\b') { continue }
-        ${'$'}serial = ${'$'}Matches[1]
-        ${'$'}model = 'unknown'
-        if (${'$'}l -match 'model:(\S+)') { ${'$'}model = ${'$'}Matches[1] }
-        ${'$'}hw = (Invoke-Adb @('-s', ${'$'}serial, 'shell', 'getprop', 'ro.serialno')).Trim()
-        if (-not ${'$'}hw) { ${'$'}hw = ${'$'}serial }
-        if (${'$'}seen.ContainsKey(${'$'}hw)) { continue }
-        ${'$'}seen[${'$'}hw] = ${'$'}true
-        ${'$'}list += [pscustomobject]@{ Serial = ${'$'}serial; Model = ${'$'}model; HwSerial = ${'$'}hw }
-    }
-    return ,${'$'}list
-}
-
+            scriptContent = adbCommon() + "\n" + """
 # --- Collect Device Logs: 크래시 직후 실행 — logcat(main/crash 버퍼)·UE 로그·크래시 폴더를 아티팩트로 ---
-${'$'}pkg    = 'com.devpub.lordmaker'
-${'$'}ueRoot = "/sdcard/Android/data/${'$'}pkg/files/UnrealGame/LordMaker/LordMaker/Saved"
-${'$'}filter = '%DeviceFilter%'.Trim()
-${'$'}outRoot = Join-Path (Get-Location) 'device-logs'
-if (Test-Path ${'$'}outRoot) { Remove-Item ${'$'}outRoot -Recurse -Force }
-New-Item ${'$'}outRoot -ItemType Directory -Force | Out-Null
+# adb 출력은 UTF-8 바이트 그대로 저장한다 (리눅스라 Windows cp949 변환 문제 없음)
+pkg='com.devpub.lordmaker'
+ueRoot="/sdcard/Android/data/${'$'}pkg/files/UnrealGame/LordMaker/LordMaker/Saved"
+outRoot="${'$'}PWD/device-logs"
+rm -rf "${'$'}outRoot"; mkdir -p "${'$'}outRoot"
 
-${'$'}manualAddress = '%ConnectAddress%'.Trim()
-Connect-WirelessDevices ${'$'}manualAddress
-${'$'}devices = Get-OnlineDevices
-if (${'$'}filter) { ${'$'}devices = @(${'$'}devices | Where-Object { ${'$'}_.Model -like "*${'$'}filter*" -or ${'$'}_.HwSerial -like "*${'$'}filter*" }) }
-if (${'$'}devices.Count -eq 0) { Write-Host "##teamcity[buildProblem description='No connected test device - turn on Wireless debugging']"; exit 1 }
+connect_wireless_devices '%ConnectAddress%'
+get_online_devices '%DeviceFilter%'
+if [ "${'$'}{#DEV_SERIAL[@]}" -eq 0 ]; then
+  echo "##teamcity[buildProblem description='No connected test device - turn on Wireless debugging']"; exit 1
+fi
 
-foreach (${'$'}d in ${'$'}devices) {
-    ${'$'}s = ${'$'}d.Serial
-    ${'$'}dir = Join-Path ${'$'}outRoot (${'$'}d.Model + '_' + ${'$'}d.HwSerial)
-    New-Item ${'$'}dir -ItemType Directory -Force | Out-Null
-    Write-Host ">> ${'$'}(${'$'}d.Model) (${'$'}(${'$'}d.HwSerial))"
+for i in "${'$'}{!DEV_SERIAL[@]}"; do
+  s="${'$'}{DEV_SERIAL[${'$'}i]}"
+  dir="${'$'}outRoot/${'$'}{DEV_MODEL[${'$'}i]}_${'$'}{DEV_HW[${'$'}i]}"
+  mkdir -p "${'$'}dir"
+  echo ">> ${'$'}{DEV_MODEL[${'$'}i]} (${'$'}{DEV_HW[${'$'}i]})"
 
-    # 기기 정보
-    ${'$'}props = foreach (${'$'}p in 'ro.product.model','ro.build.version.release','ro.build.version.sdk','ro.hardware','ro.board.platform','ro.hardware.vulkan','ro.hardware.egl') {
-        "${'$'}p=" + (Invoke-Adb @('-s', ${'$'}s, 'shell', 'getprop', ${'$'}p)).Trim()
-    }
-    # adb shell은 인자를 공백으로 이어 기기 셸에서 실행 → 파이프 기호가 든 패턴은 따옴표로 감싸야 함
-    ${'$'}props += 'app=' + ((Invoke-Adb @('-s', ${'$'}s, 'shell', "dumpsys package ${'$'}pkg | grep -E 'versionName|lastUpdateTime'")) -replace '\s+', ' ').Trim()
-    [IO.File]::WriteAllLines((Join-Path ${'$'}dir 'device.txt'), [string[]]${'$'}props)
-    ${'$'}props | ForEach-Object { Write-Host ('   ' + ${'$'}_) }
+  # 기기 정보
+  {
+    for p in ro.product.model ro.build.version.release ro.build.version.sdk ro.hardware ro.board.platform ro.hardware.vulkan ro.hardware.egl; do
+      echo "${'$'}p=$(adbq -s "${'$'}s" shell getprop "${'$'}p")"
+    done
+    # adb shell은 인자를 이어 기기 셸에서 실행 → 파이프가 든 명령은 한 인자로 넘긴다
+    echo "app=$(adbq -s "${'$'}s" shell "dumpsys package ${'$'}pkg | grep -E 'versionName|lastUpdateTime'" | tr -s ' \n' ' ')"
+  } > "${'$'}dir/device.txt"
+  sed 's/^/   /' "${'$'}dir/device.txt"
 
-    # logcat: 크래시 버퍼(네이티브 tombstone 요약·Java 예외) + 전체 main/system 버퍼(UE 로그 태그 UE 포함)
-    foreach (${'$'}buf in 'crash', 'all') {
-        ${'$'}txt = Invoke-Adb @('-s', ${'$'}s, 'logcat', '-d', '-b', ${'$'}buf, '-v', 'threadtime')
-        [IO.File]::WriteAllText((Join-Path ${'$'}dir "logcat-${'$'}buf.txt"), ${'$'}txt, (New-Object Text.UTF8Encoding ${'$'}false))
-    }
+  # logcat: 크래시 버퍼(네이티브 tombstone 요약·Java 예외) + 전체 main/system 버퍼(UE 로그 태그 UE 포함)
+  for buf in crash all; do
+    "${'$'}ADB" -s "${'$'}s" logcat -d -b "${'$'}buf" -v threadtime </dev/null > "${'$'}dir/logcat-${'$'}buf.txt" 2>&1
+  done
 
-    # UE 로그·크래시 (bUseExternalFilesDir=True → 앱 전용 외부 폴더)
-    foreach (${'$'}sub in 'Logs', 'Crashes') {
-        ${'$'}r = Invoke-Adb @('-s', ${'$'}s, 'pull', "${'$'}ueRoot/${'$'}sub", (Join-Path ${'$'}dir ${'$'}sub))
-        Write-Host ("   pull " + ${'$'}sub + ": " + ((${'$'}r -split "`n") | Select-Object -Last 1))
-    }
+  # UE 로그·크래시 (bUseExternalFilesDir=True → 앱 전용 외부 폴더)
+  for sub in Logs Crashes; do
+    echo "   pull ${'$'}sub: $(adbq -s "${'$'}s" pull "${'$'}ueRoot/${'$'}sub" "${'$'}dir/${'$'}sub" | tail -1)"
+  done
 
-
-    # 콘솔에 핵심만: 치명 오류·네이티브 크래시·UE Fatal
-    ${'$'}crash = Get-Content (Join-Path ${'$'}dir 'logcat-crash.txt') -ErrorAction SilentlyContinue
-    ${'$'}all   = Get-Content (Join-Path ${'$'}dir 'logcat-all.txt') -ErrorAction SilentlyContinue
-    Write-Host '>> logcat crash buffer (tail 60):'
-    ${'$'}crash | Select-Object -Last 60 | ForEach-Object { Write-Host ('   ' + ${'$'}_) }
-    Write-Host '>> UE Fatal/Error lines (last 60):'
-    ${'$'}all | Select-String -Pattern 'Fatal|Assertion failed|Unhandled Exception|SIGSEGV|SIGABRT|signal \d+|LogAndroid.*Error|Error:' | Select-Object -Last 60 | ForEach-Object { Write-Host ('   ' + ${'$'}_.Line) }
-    # 참고용(판정 없음): 서버 주소·네트워크·로그인 — 접속 문제를 볼 때 먼저 보는 줄
-    Write-Host '>> network/login lines (last 30, reference):'
-    ${'$'}all | Select-String -Pattern 'LM\.Server\.Url|LogLMNetwork|LogLMLogin|deviceId=|LogHttp: Warning|LogSsl|LogCurl' | Select-Object -Last 30 | ForEach-Object { Write-Host ('   ' + ${'$'}_.Line) }
-}
-Write-Host ">> 로그는 빌드 아티팩트 device-logs.zip 에 있습니다"
-                """.trimIndent()
-            }
+  # 콘솔에 핵심만: 치명 오류·네이티브 크래시·UE Fatal
+  echo '>> logcat crash buffer (tail 60):'
+  tail -n 60 "${'$'}dir/logcat-crash.txt" | sed 's/^/   /'
+  echo '>> UE Fatal/Error lines (last 60):'
+  grep -E 'Fatal|Assertion failed|Unhandled Exception|SIGSEGV|SIGABRT|signal [0-9]+|LogAndroid.*Error|Error:' "${'$'}dir/logcat-all.txt" | tail -n 60 | sed 's/^/   /'
+  # 참고용(판정 없음): 서버 주소·네트워크·로그인 — 접속 문제를 볼 때 먼저 보는 줄
+  echo '>> network/login lines (last 30, reference):'
+  grep -E 'LM\.Server\.Url|LogLMNetwork|LogLMLogin|deviceId=|LogHttp: Warning|LogSsl|LogCurl' "${'$'}dir/logcat-all.txt" | tail -n 30 | sed 's/^/   /'
+done
+echo ">> 로그는 빌드 아티팩트 device-logs.zip 에 있습니다"
+            """.trimIndent()
         }
     }
 
     requirements {
-        equals("teamcity.agent.name", "Agent_Win64")
+        equals("devpub.role", "server")
     }
 })
