@@ -809,7 +809,7 @@ SV="$(echo "${'$'}SC" | jq -c '[.rulesVersion, .staticDataVersion]')"
 VV="$(echo "${'$'}VER" | jq -c '[.rulesVersion, .staticDataVersion]')"
 echo ">> versions: checkout ${'$'}CV, static-data ${'$'}VV, selfcheck ${'$'}SV, selfcheck totalTurns $(echo "${'$'}SC" | jq -r '.totalTurns')"
 [ "${'$'}SV" = "${'$'}CV" ] && [ "${'$'}VV" = "${'$'}CV" ] || rollback "version mismatch: checkout ${'$'}CV, static-data ${'$'}VV, selfcheck ${'$'}SV"
-echo "##teamcity[buildStatus text='lordmaker@${'$'}PORT rules/data ${'$'}SV (server ${'$'}{SREV:0:7}, LMCore #${'$'}LMB)']"
+echo "##teamcity[buildStatus text='lordmaker@${'$'}PORT rules ${'$'}RV / data ${'$'}DV (server ${'$'}{SREV:0:7}, LMCore #${'$'}LMB)']"
 
 # 6. 오래된 릴리스 정리: current-*/previous-*가 가리키지 않는 것 중 최신 6개만 남김
 cd "${'$'}ROOT/releases"
