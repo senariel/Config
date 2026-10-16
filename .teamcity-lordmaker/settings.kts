@@ -670,9 +670,11 @@ fi
 
     triggers {
         schedule {
+            // 서버 컨테이너 시간은 UTC — 의도한 야간(KST 03:30)으로 고정
             schedulingPolicy = daily {
                 hour = 3
                 minute = 30
+                timezone = "Asia/Seoul"
             }
             branchFilter = "+:<default>"
             triggerBuild = always()
