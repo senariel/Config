@@ -381,7 +381,7 @@ Write-Host (">> Core Gates OK: " + ${'$'}sums.Count + " runs, baseline DIFF " + 
 
 object Package : BuildType({
     name = "Package"
-    description = "Win64/Android Development 쿠킹·패키징. main 푸시 자동 + 수동. 최신본 1개만 공유 폴더 LordMaker/<플랫폼>에 교체, ArchiveBuild 체크 시에만 zip 보관."
+    description = "Win64/Android Development 쿠킹·패키징. 수동 실행만(개발 PC 충돌 방지). 최신본 1개만 공유 폴더 LordMaker/<플랫폼>에 교체, ArchiveBuild 체크 시에만 zip 보관."
 
     // TeamCity 아티팩트로는 게시하지 않는다(빌드마다 서버에 쌓임 — 디스크 여유 부족).
     // 산출물: LM_DIST_PATH\Win64, LM_DIST_PATH\Android(APK + 기본 명령줄 UECommandLine.txt + BUILD_INFO.txt)
@@ -526,11 +526,8 @@ if (${'$'}failed.Count -gt 0) { exit 1 }
         }
     }
 
-    triggers {
-        vcs {
-            branchFilter = "+:main"
-        }
-    }
+    // 트리거 없음 — 수동 실행만 (2026-10-17 사용자 결정). Project 에이전트가 개발 PC(MAGI-LAPTOP)라
+    // main 푸시마다 몇 분~몇 시간 쿠킹이 돌면 로컬 UE 빌드와 UBT 전역 뮤텍스가 충돌해 개발 빌드가 실패함.
 
     failureConditions {
         executionTimeoutMin = 360
