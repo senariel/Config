@@ -90,6 +90,9 @@ object Client : Project({
         // 설치형 엔진 로컬 사본(Sync Engine이 UE5_DIST_SOURCE에서 robocopy /MIR로 맞춤)
         param("env.UE5_ENGINE_ROOT", """C:\Dev\Engine\UE5""")
         param("env.UE5_DIST_SOURCE", """\\192.168.219.180\Shared\UE5""")
+        // Android Gradle용 JDK(javac 필요). 에이전트 자체는 JRE(Eclipse Adoptium)로 돌고 env.JAVA_HOME도 그 JRE라
+        // Gradle이 'does not provide the required capabilities: [JAVA_COMPILER]'로 실패함 → 빌드에서만 Android Studio jbr로 덮어씀
+        param("env.JAVA_HOME", """C:\Program Files\Android\Android Studio\jbr""")
         // 패키지 최신본(항상 1개, 매 빌드 교체)과 선택적 zip 보관 위치 — 아카이브는 배포 폴더 밖이어야 함(robocopy /MIR)
         param("env.LM_DIST_PATH", """\\192.168.219.180\Shared\LordMaker""")
         param("env.LM_ARCHIVE_PATH", """\\192.168.219.180\Shared\LordMaker_Archives""")
