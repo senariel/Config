@@ -466,8 +466,10 @@ object Server : Project({
 })
 
 // 리눅스 에이전트 공통: Python 3.14 확인 (없으면 원인을 바로 표시)
-// 스크립트 조각은 val이 아니라 fun — settings.kts는 위에서부터 실행되는 스크립트라, 아래에 선언한 val은 project{} 시점에 아직 비어 있다
-fun pyCheckScript(): String = """
+// 스크립트 조각은 object 안의 val로 둔다 — 최상위 fun/val은 스크립트 클래스 멤버라 object(빌드 구성)가 참조하면
+// DSL 컴파일 오류('captures the script class instance'), 최상위 val은 선언 순서 문제도 있다. object 멤버는 첫 사용 때 초기화.
+object PyCheck {
+val script = """
 #!/usr/bin/env bash
 set -uo pipefail
 if ! "%env.LM_PYTHON%" -c 'import sys; sys.exit(0 if sys.version_info[:2]==(3,14) else 1)'; then
@@ -476,6 +478,7 @@ if ! "%env.LM_PYTHON%" -c 'import sys; sys.exit(0 if sys.version_info[:2]==(3,14
 fi
 "%env.LM_PYTHON%" --version
 """.trimIndent()
+}
 
 object LMCore : BuildType({
     name = "LMCore"
@@ -498,7 +501,7 @@ object LMCore : BuildType({
         script {
             name = "Python 3.14 check"
             id = "PyCheck"
-            scriptContent = pyCheckScript()
+            scriptContent = PyCheck.script
         }
         script {
             name = "CMake build + ctest"
@@ -580,7 +583,7 @@ object ServerTests : BuildType({
         script {
             name = "Python 3.14 check"
             id = "PyCheck"
-            scriptContent = pyCheckScript()
+            scriptContent = PyCheck.script
         }
         script {
             name = "pytest"
@@ -643,7 +646,7 @@ object StaticDataDrift : BuildType({
         script {
             name = "Python 3.14 check"
             id = "PyCheck"
-            scriptContent = pyCheckScript()
+            scriptContent = PyCheck.script
         }
         script {
             name = "check_static_drift.py"
@@ -703,7 +706,8 @@ object Device : Project({
 
 // adb 공통 (Register/Deploy/Collect 앞부분) — bash
 // adb shell은 stdin을 읽으므로 while-read 루프 안에서 부르는 adb는 반드시 </dev/null (adbq가 처리)
-fun adbCommon(): String = """
+object AdbCommon {
+val script = """
 #!/usr/bin/env bash
 set -uo pipefail
 ADB="%env.ADB%"
@@ -772,6 +776,7 @@ get_online_devices() {
   done < <(adbq devices -l | tail -n +2)
 }
 """.trimIndent()
+}
 
 object RegisterDevice : BuildType({
     name = "Register Device"
@@ -790,7 +795,7 @@ object RegisterDevice : BuildType({
         script {
             name = "adb pair"
             id = "Pair"
-            scriptContent = adbCommon() + "\n" + """
+            scriptContent = AdbCommon.script + "\n" + """
 # --- Register Device: adb pair (기기당 1회, 페어링 키는 에이전트 계정의 ~/.android에 영구 저장) ---
 addr="$(printf '%%s' '%PairAddress%' | tr -d '[:space:]')"
 code="$(printf '%%s' '%PairCode%' | tr -d '[:space:]')"
@@ -859,7 +864,7 @@ object DeployToDevice : BuildType({
         script {
             name = "Install (+ launch)"
             id = "Deploy"
-            scriptContent = adbCommon() + "\n" + """
+            scriptContent = AdbCommon.script + "\n" + """
 # --- Deploy to Device: 연결 → install -r → (옵션) 실행·로그인 deviceId 참고 출력 ---
 # 기기 ID(계정)는 배포 도구가 정하지 않는다 — 앱 첫 실행 때 엔진이 무작위 ID를 만들어 내부 저장소에 저장하고,
 # install -r 해도 유지된다(사용자 결정, 2026-10-07). 그래서 ID 주입·검증 단계는 없다.
@@ -946,7 +951,7 @@ object CollectDeviceLogs : BuildType({
         script {
             name = "Collect logcat + UE logs"
             id = "Collect"
-            scriptContent = adbCommon() + "\n" + """
+            scriptContent = AdbCommon.script + "\n" + """
 # --- Collect Device Logs: 크래시 직후 실행 — logcat(main/crash 버퍼)·UE 로그·크래시 폴더를 아티팩트로 ---
 # adb 출력은 UTF-8 바이트 그대로 저장한다 (리눅스라 Windows cp949 변환 문제 없음)
 pkg='com.devpub.lordmaker'
