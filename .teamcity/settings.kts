@@ -339,7 +339,7 @@ object BuildEditor : BuildType({
                     }
                     
                     # 잔여 출력 flush
-                    Get-Content ${'$'}tmpLog -Raw -ErrorAction SilentlyContinue | ForEach-Object { if (${'$'}_) { Write-Host ${'$'}_ } }
+                    Get-Content ${'$'}tmpLog -Raw -Encoding UTF8 -ErrorAction SilentlyContinue | ForEach-Object { if (${'$'}_) { Write-Host ${'$'}_ } }
                     Remove-Item ${'$'}tmpLog -ErrorAction SilentlyContinue
                     
                     ${'$'}proc.WaitForExit()

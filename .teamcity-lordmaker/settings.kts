@@ -143,7 +143,7 @@ while (!${'$'}proc.HasExited) {
     Start-Sleep -Seconds 60
     Write-Host ('[heartbeat] robocopy running for {0:N1} min' -f ((Get-Date) - ${'$'}startTime).TotalMinutes)
 }
-Get-Content ${'$'}tmpLog -Raw -ErrorAction SilentlyContinue | ForEach-Object { if (${'$'}_) { Write-Host ${'$'}_ } }
+Get-Content ${'$'}tmpLog -Raw -Encoding UTF8 -ErrorAction SilentlyContinue | ForEach-Object { if (${'$'}_) { Write-Host ${'$'}_ } }
 Remove-Item ${'$'}tmpLog -ErrorAction SilentlyContinue
 ${'$'}proc.WaitForExit()
 ${'$'}rc = ${'$'}proc.ExitCode
