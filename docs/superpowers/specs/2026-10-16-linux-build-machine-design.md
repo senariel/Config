@@ -137,7 +137,7 @@ cmake --build build && ctest --test-dir build --output-on-failure
 | 현재 버전 | `/srv/lordmaker/current-8800`, `/srv/lordmaker/current-8801` (심볼릭 링크, 인스턴스별) |
 | 데이터 | `/var/lib/lordmaker/8800/lordmaker.db`, `/var/lib/lordmaker/8801/lordmaker-fast.db` |
 | 환경 | `/etc/lordmaker/8800.env`, `/etc/lordmaker/8801.env` (권한 640, `root:lordmaker`) |
-| 백업 | `/mnt/d/Shared/LordMaker_Backups/<포트>/<날짜시각>-<rev>.db` (다른 디스크) |
+| 백업 | `/mnt/d/LordMaker/backups/<포트>/<날짜시각>-<서버rev7>.db` (다른 디스크, samba·Nextcloud 공유 밖, 포트별 10개) — 2026-10-16 변경 |
 
 - 인스턴스별 링크를 두는 이유: 8801(테스트)에 먼저 배포해 확인한 뒤 8800에 올릴 수 있게.
 - `teamcity`는 `lordmaker` 그룹 — 릴리스 폴더를 쓰고 링크를 바꿀 수 있게.
@@ -178,6 +178,8 @@ teamcity ALL=(root) NOPASSWD: /usr/bin/systemctl restart lordmaker@8800.service,
   - LAN에 8800/8801을 열면 `/internal/*`도 LAN에서 닿는다(`X-Worker-Token` 보호라 개발 기간 수용). S3 체크리스트: "LAN 직결 제거 또는 토큰 강화".
 
 ### Server / Deploy Server (신규 구성, 수동)
+
+> 2026-10-16 구현 시 변경: lmcore는 배포에서 다시 빌드하지 않고 **LMCore 아티팩트(.so)를 재사용**, 설치는 **`pip install -e`**(정적 데이터 경로 때문), 확인은 **체크아웃 상수 = version = selfcheck 3자 비교** + `totalTurns` 기록. 정본은 settings.kts의 `DeployServer`.
 - 요구 조건 `devpub.role = server`. VCS: ServerVcs(main 기본, 브랜치 선택 가능) + GameVcs(`Core/` 부분 체크아웃).
 - 파라미터: `Instance` = `8801` | `8800` (기본 8801), `ClientRev`(기본 = LMCore 마지막 성공 main의 리비전).
 - 순서:
@@ -253,7 +255,7 @@ horde-redis    redis:alpine (Nextcloud용과 분리)        볼륨 /srv/horde/re
 | P0 | `/mnt/d` 정리, 마운트 umask 007, `gray` → `www-data` | **완료(2026-10-16)** |
 | P1 | 리눅스 에이전트 설치·승인, 툴셋. Server·Device 구성 리눅스 전환 | LMCore·Server Tests·Drift 녹색, 폰 재페어링·Deploy 성공 |
 | P2 | Horde 서버 compose 기동 | MAGI·MAGI-LAPTOP 워커가 Horde에 붙음 |
-| P3 | 게임 서버: 계정·경로·유닛·ufw. 8801을 새 DB로 먼저 기동 → Deploy Server로 배포 확인 → 결정론 게이트 G1~G4 | 8801에서 확인 2종 통과, G1~G4 통과 |
+| P3 | 게임 서버: 계정·경로·유닛·ufw. 8801을 새 DB로 먼저 기동 → Deploy Server로 배포 확인 → 결정론 게이트 G1~G4 | **완료(2026-10-16)**: Deploy #1 8801 28/23 totalTurns 54, G4 960행 일치 |
 | P4 | **전환 당일** (아래) | 실서버 트래픽이 .180으로 |
 | P5 | Windows 에이전트 Engine·Project 설치, Client·UnrealEngine5 구성 이전, 엔진 전달 경로 | Editor Build·Package 녹색 |
 | P6 | 문서: 위키(01·02·05·06·07·08·09·10), Config `CLAUDE.md` | 위키만 보고 운영 가능 |
