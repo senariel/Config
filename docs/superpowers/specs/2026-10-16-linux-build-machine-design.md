@@ -76,7 +76,7 @@ devpub.role=server
 env.LANG=C.UTF-8
 env.TZ=Asia/Seoul
 ```
-- 서버 옵션 `-Dteamcity.agent.autoUpgrade=false`라 에이전트 자동 업그레이드가 없다. TeamCity 서버를 올릴 때 에이전트도 서버의 `buildAgentFull.zip`으로 다시 설치한다.
+- ~~서버 옵션 `-Dteamcity.agent.autoUpgrade=false`라 자동 업그레이드가 없다~~ → 2026-10-16 **자동 업그레이드를 켰다**(옵션 제거, 사용자 결정). TeamCity 이미지는 `latest`. systemd 유닛의 `RemainAfterExit=yes`가 있어야 업그레이드 후 에이전트가 돌아온다.
 - 첫 연결 후 TeamCity UI에서 승인(Authorize)한다.
 
 ### 툴셋
