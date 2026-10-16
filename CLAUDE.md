@@ -345,6 +345,19 @@ UBA executor가 Horde에 `GET http://<server>:13340/api/v1/server/auth`로 인�
 
 해결: 위 "에이전트 준비" 3번처럼 **Machine 범위로 승격 후 에이전트 재시작**. 에이전트는 env를 시작 시에만 읽으므로 재시작 필수. SDK 경로가 사용자 폴더(`C:\Users\<user>\AppData\Local\Android\Sdk`)여도 LocalSystem은 읽을 수 있어 그대로 사용 가능.
 
+## 빌드 머신 리눅스 전환 (2026-10-15~) — 먼저 읽을 것
+
+설계: `docs/superpowers/specs/2026-10-16-linux-build-machine-design.md`. 위키 `BuildMachine/01·02·08·10`에 현황·함정·남은 단계.
+
+- 192.168.219.180은 이제 **Ubuntu 26.04 `MAGI-AM02`** (예전 Windows+WSL "AYA-ZZANG"). TeamCity 서버·Caddy·samba는 Docker(`/home/gray/docker/docker-compose.yml`). `Agent_Win64`는 사라져 **삭제**했고, 에이전트는 `Agent_Linux`(id 231, 호스트 systemd, `devpub.role=server`) 하나.
+- **배정은 이름이 아니라 `devpub.role`**: LordMaker Server·Device = `server`(Agent_Linux), Client = `project`(Windows 에이전트 예정 — 없어서 큐 대기), UnrealEngine5 = 아직 `teamcity.agent.name = Agent_Win64`(Engine 에이전트를 붙일 때 `engine`으로).
+- 이 문서 아래의 `Agent_Win64`·`D:\…`·PowerShell 설명은 **Windows 시절 기준**이다. LordMaker Server·Device는 bash, LMCore는 gcc로 `.so`를 만든다(FP 결정론 플래그를 빌드가 검사).
+- 함정 3건(2026-10-16):
+  1. TeamCity 데이터가 NTFS(`/mnt/d`, uid 33)에 있어 root git이 미러를 `dubious ownership`으로 거부 → 모든 VCS 루트가 `'origin' does not appear to be a git repository`로 조용히 멈춤. compose에 `GIT_CONFIG_COUNT=1 / GIT_CONFIG_KEY_0=safe.directory / GIT_CONFIG_VALUE_0=*`.
+  2. DSL에서 빌드 구성 `object`가 최상위 `fun`/`val`을 참조하면 `captures the script class instance` 컴파일 오류 → 공통 스크립트는 `object X { val script = """…""" }`.
+  3. 리눅스 에이전트 systemd 유닛에 `RemainAfterExit=yes`(+`SuccessExitStatus=0 143`)가 없으면 첫 자기 업그레이드 후 돌아오지 않음.
+- DSL 오류 줄은 `GET /get/file/serverLogs/teamcity-versioned-settings.log`의 `Compilation error`에서 볼 수 있다. 설정이 옛 커밋에 머물면 먼저 VCS 루트 `lastVersion`을 확인(DSL 오류가 아니라 저장소를 못 읽는 것일 수 있음).
+
 ## LordMaker CI (`DevPub / LordMaker`)
 
 구조 (설계: `docs/superpowers/specs/2026-10-06-lordmaker-ci-structure-design.md`):
@@ -355,18 +368,18 @@ UBA executor가 Horde에 `GET http://<server>:13340/api/v1/server/auth`로 인�
 | Client | Android Compile | 모든 브랜치 푸시 | `Build.bat LordMaker Android Development` (쿡 없음) |
 | Client | Core Gates | 모든 브랜치 푸시 (Editor Build 스냅샷 의존, 같은 체크아웃 폴더 `LordMakerCI`) | `Tools/core_gates.sh`. exit≠0 실패, 마지막 성공 main `gates.zip` 대비 DIFF는 경고 |
 | Client | Package | main 푸시 + 수동 | BuildCookRun → **최신본 1개만** `D:\Shared\LordMaker\<Win64|Android>`에 robocopy /MIR 교체(TeamCity 아티팩트로 게시 안 함 — 서버 디스크 여유 부족). `ArchiveBuild` 체크 시에만 `D:\Shared\LordMaker_Archives`에 zip(자동 삭제 없음). 작업 폴더의 Archive·StagedBuilds 사본은 배포 후 삭제 |
-| Server | LMCore | LordMaker `Core/**`·`Source/LMCore/**` 변경 | vcvars64 → CMake/Ninja → ctest(`PYTHONUTF8=1`), 아티팩트 `lmcore*.pyd` |
-| Server | Server Tests | LordMakerServer 모든 브랜치 | LMCore main `.pyd` + `LORDMAKER_FIXTURES` → pytest(JUnit) |
+| Server | LMCore | LordMaker `Core/**`·`Source/LMCore/**` 변경 | (Agent_Linux) gcc·CMake/Ninja `-march=x86-64-v2` → 플래그 검사 → ctest 3종(`sweep_gate` 포함), 아티팩트 `lmcore*.so` |
+| Server | Server Tests | LordMakerServer 모든 브랜치 | (Agent_Linux) LMCore main `.so` + `LORDMAKER_FIXTURES` → pytest(JUnit), 기준 62 passed / skip 0 |
 | Server | Static Data Drift | 매일 03:30 | 서버 `tools/check_static_drift.py` (0 일치 / 1 드리프트 / 2 체크아웃 문제) |
 | Device | Register Device | 수동 (기기당 1회) | 휴대폰 무선 디버깅 페어링 IP:포트·6자리 코드로 `adb pair` (키는 에이전트 adb에 영구 저장) |
-| Device | Deploy to Device | 수동 | `D:\Shared\LordMaker\Android`(또는 `ApkDir`)의 APK `install -r` → (옵션) 실행 후 `LogLMLogin` deviceId 참고 출력. **ID 주입 없음** |
+| Device | Deploy to Device | 수동 | (Agent_Linux) `/mnt/d/Shared/LordMaker/Android`(또는 `ApkDir`)의 APK `install -r` → (옵션) 실행 후 `LogLMLogin` deviceId 참고 출력. **ID 주입 없음** |
 | Device | Collect Device Logs | 수동 | logcat(crash/all)·UE 로그·크래시 폴더 → 아티팩트 `device-logs.zip`. 서버 주소·네트워크·로그인 줄 요약 |
 
 - **기기 ID는 배포 도구가 정하지 않는다** (사용자 결정, 2026-10-07): 앱 첫 실행 때 엔진(`FAndroidMisc::GetLoginId()`)이 무작위 GUID를 만들어 내부 저장소 `files/login-identifier.txt`에 저장하고, `install -r`해도 유지된다. 실계정과 겹치지 않는다. 그래서 테스트 ID 주입(외부 `UECommandLine.txt`의 `-LMDeviceId`, `run-as`로 로그인 ID 파일 쓰기)은 폐기했고, 클라도 `-LMDeviceId`를 제거했다(PR #101). 참고: 외부 `UECommandLine.txt`는 adb가 넣은 파일을 앱이 열지 못해 무시됐었다(`[GameActivity] Using APK commandline`).
 - **서버 주소는 클라가 가진다** (LordMaker main 6207355~): `DefaultGame.ini` `[/Script/LordMaker.LMServerSettings]` 서버 목록(Live 기본=`https://lm.senariel.duckdns.org`, Lan, Local, Test). 선택: 콘솔 `LM.Server.Url` > 명령줄 `-LMServer=<이름|URL>` > 저장된 선택 > 기본. Shipping은 항상 Live. **빌드는 주소를 주입하지 않는다** — Package는 예전에 작업 사본에 써 둔 `Config/<Platform>/<Platform>Engine.ini`(Git 추적 밖이라 체크아웃 정리로 안 지워짐)를 지운다.
 - 함정: **UE ini 값에 `//`가 있으면 따옴표로 감쌀 것.** 따옴표 없는 값은 `//`부터 주석으로 잘린다(`ConfigCacheIni.cpp`). 예전 주입 `LM.Server.Url=https://…`가 `https:`로 잘려 앱이 `GET https:/v1/compat`(Could not resolve host)를 보냈다(Package #33).
 
-- 공통 파라미터(프로젝트 레벨): `env.UE5_ENGINE_ROOT`, `env.LM_PYTHON`(`C:\Program Files\Python314\python.exe` — **모든 사용자 설치** 필요, LocalSystem 에이전트), `env.VCVARS64`.
+- 경로 파라미터는 하위 프로젝트별(2026-10-16~): Client `env.UE5_ENGINE_ROOT`·`env.LM_DIST_PATH`·`env.LM_ARCHIVE_PATH`(Windows `D:\Shared\…`), Server `env.LM_PYTHON=/usr/bin/python3.14`, Device `env.ADB=/opt/android/platform-tools/adb`·`env.LM_DIST_PATH=/mnt/d/Shared/LordMaker`. `env.VCVARS64`는 없앰.
 - 서버 배포·재시작은 넣지 않음(서버 세션이 버전 동기·.pyd 교체·DB와 묶어 수동 관리). Device(테스트 기기)·Shipping은 미구현.
 - 함정: Package `-archivedirectory`는 **플랫폼별 경로를 직접** 준다. UE(`DeploymentContext.cs`)는 경로에 플랫폼 이름이 들어 있으면 `Windows`/`Android_ASTC` 하위 폴더를 붙이지 않는데, 에이전트 work 경로 `D:\teamcity\agent\Win64\...`의 `Win64` 때문에 Win64 결과가 `Archive\` 바로 아래로 가서 아티팩트가 비었었다(#29).
 
