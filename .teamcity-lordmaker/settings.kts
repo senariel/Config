@@ -457,7 +457,8 @@ object Server : Project({
     buildType(LMCore)
     buildType(ServerTests)
     buildType(StaticDataDrift)
-    buildTypesOrder = arrayListOf(LMCore, ServerTests, StaticDataDrift)
+    buildType(DeployServer)
+    buildTypesOrder = arrayListOf(LMCore, ServerTests, StaticDataDrift, DeployServer)
 
     params {
         // 시스템 Python 3.14 (apt python3.14 + python3.14-venv/-dev). 게임 서버도 같은 인터프리터로 돈다 → lmcore .so ABI 일치
@@ -679,6 +680,150 @@ fi
             branchFilter = "+:<default>"
             triggerBuild = always()
             withPendingChangesOnly = false
+        }
+    }
+
+    requirements {
+        equals("devpub.role", "server")
+    }
+})
+
+object DeployServer : BuildType({
+    name = "Deploy Server"
+    description = "게임 서버 수동 배포 (.180 systemd lordmaker@<포트>). 릴리스 생성 → DB 백업 → 링크 전환 → 재시작 → 확인(static-data/version + /internal/selfcheck) → 실패 시 롤백. 설계서 4장."
+
+    params {
+        select("Instance", "8801", label = "인스턴스",
+                description = "8801 = 5분 주기 테스트 서버(먼저 배포해 확인), 8800 = 실서버",
+                display = ParameterDisplay.PROMPT,
+                options = listOf("8801 (테스트)" to "8801", "8800 (실서버)" to "8800"))
+    }
+
+    vcs {
+        root(ServerVcs)
+        checkoutMode = CheckoutMode.ON_AGENT
+        checkoutDir = "LordMakerDeploy"
+    }
+
+    steps {
+        script {
+            name = "Deploy"
+            id = "Deploy"
+            scriptContent = """
+#!/usr/bin/env bash
+# 배포 1회 = 새 릴리스 폴더 1개. 서버 = 이 체크아웃(ServerVcs), lmcore = LMCore 아티팩트(G1·G3를 통과한 바로 그 .so)
+set -euo pipefail
+PORT='%Instance%'
+case "${'$'}PORT" in 8800|8801) ;; *) echo "##teamcity[buildProblem description='Instance must be 8800 or 8801']"; exit 1 ;; esac
+ENV_FILE="/etc/lordmaker/${'$'}PORT.env"
+[ -r "${'$'}ENV_FILE" ] || { echo "##teamcity[buildProblem description='${'$'}ENV_FILE not readable by agent (group lordmaker, mode 640)']"; exit 1; }
+
+SREV='%build.vcs.number.LordMaker_ServerVcs%'
+LMB='%dep.LordMaker_LMCore.build.number%'
+CREV='%dep.LordMaker_LMCore.build.vcs.number.LordMaker_GameVcs%'
+SO="$(ls -1 lmcore/lmcore*.so 2>/dev/null | head -1)"
+[ -n "${'$'}SO" ] || { echo "##teamcity[buildProblem description='LMCore .so artifact missing']"; exit 1; }
+
+ROOT=/srv/lordmaker
+REL="${'$'}ROOT/releases/${'$'}{SREV:0:7}-${'$'}{CREV:0:7}-b%build.number%"
+echo ">> instance ${'$'}PORT, server ${'$'}SREV, client ${'$'}CREV (LMCore #${'$'}LMB) -> ${'$'}REL"
+
+# 1. 릴리스 폴더: 서버 소스(추적 파일만) + .so + venv(editable — 정적 데이터 경로가 app/ 기준 상대라 비-editable 불가)
+mkdir "${'$'}REL"
+git archive --format=tar HEAD | tar -x -C "${'$'}REL"
+cp "${'$'}SO" "${'$'}REL/"
+python3.14 -m venv "${'$'}REL/.venv"
+"${'$'}REL/.venv/bin/python" -m pip install -q --disable-pip-version-check -e "${'$'}REL"
+"${'$'}REL/.venv/bin/python" -m compileall -q "${'$'}REL/app" "${'$'}REL/bots" || true
+{
+  echo "server_rev=${'$'}SREV"
+  echo "client_rev=${'$'}CREV"
+  echo "lmcore_build=${'$'}LMB"
+  echo "lmcore_so=$(basename "${'$'}SO")"
+  echo "teamcity_build=%build.number%"
+  echo "instance=${'$'}PORT"
+  echo "date=$(date '+%%F %%T %%Z')"
+} > "${'$'}REL/DEPLOY_INFO.txt"
+sed 's/^/   /' "${'$'}REL/DEPLOY_INFO.txt"
+
+# 2. DB 백업 (온라인 백업 — 서버가 돌고 있어도 일관된 사본. 새 DB면 건너뜀). 위치는 samba 공유 밖
+DB="$(grep '^LORDMAKER_DB=' "${'$'}ENV_FILE" | cut -d= -f2-)"
+if [ -f "${'$'}DB" ]; then
+  BK="/mnt/d/backups/lordmaker/${'$'}PORT/$(date +%%Y%%m%%d-%%H%%M%%S)-${'$'}{SREV:0:7}.db"
+  sqlite3 "${'$'}DB" ".backup '${'$'}BK'"
+  QC="$(sqlite3 "${'$'}BK" 'PRAGMA quick_check;')"
+  [ "${'$'}QC" = "ok" ] || { echo "##teamcity[buildProblem description='DB backup quick_check failed: ${'$'}QC']"; exit 1; }
+  echo ">> DB backup: ${'$'}BK ($(du -h "${'$'}BK" | cut -f1), quick_check ok)"
+else
+  echo ">> DB backup: skipped (no DB yet: ${'$'}DB)"
+fi
+
+# 3. 링크 전환 (원자적: 새 링크를 만든 뒤 mv -T로 바꿔치기). 이전 대상은 previous-<포트>
+CUR="${'$'}ROOT/current-${'$'}PORT"
+PREV_TARGET="$(readlink "${'$'}CUR" || true)"
+[ -z "${'$'}PREV_TARGET" ] || { ln -sfn "${'$'}PREV_TARGET" "${'$'}ROOT/previous-${'$'}PORT.tmp"; mv -T "${'$'}ROOT/previous-${'$'}PORT.tmp" "${'$'}ROOT/previous-${'$'}PORT"; }
+ln -sfn "${'$'}REL" "${'$'}CUR.tmp" && mv -T "${'$'}CUR.tmp" "${'$'}CUR"
+echo ">> ${'$'}CUR -> ${'$'}REL (previous: ${'$'}{PREV_TARGET:-none})"
+
+rollback() {
+  echo "##teamcity[buildProblem description='Deploy verification failed on ${'$'}PORT: ${'$'}1']"
+  if [ -n "${'$'}PREV_TARGET" ]; then
+    ln -sfn "${'$'}PREV_TARGET" "${'$'}CUR.tmp" && mv -T "${'$'}CUR.tmp" "${'$'}CUR"
+    sudo -n /usr/bin/systemctl restart "lordmaker@${'$'}PORT.service" || true
+    echo ">> rolled back: ${'$'}CUR -> ${'$'}PREV_TARGET (DB는 되돌리지 않음 — 필요하면 백업에서 수동 복구)"
+  else
+    echo ">> first deploy - nothing to roll back to"
+  fi
+  journalctl -u "lordmaker@${'$'}PORT" -n 40 --no-pager 2>/dev/null | sed 's/^/   /' || true
+  exit 1
+}
+
+# 4. 재시작
+sudo -n /usr/bin/systemctl restart "lordmaker@${'$'}PORT.service" || rollback "systemctl restart failed"
+
+# 5. 확인 ① 버전(비인증) ② selfcheck(코어·워커·스케줄러 — 토큰은 env에서, 명령줄·로그에 남기지 않음)
+BASE="http://127.0.0.1:${'$'}PORT"
+VER=''
+for _ in $(seq 1 30); do
+  VER="$(curl -fsS -m 5 "${'$'}BASE/v1/static-data/version" 2>/dev/null || true)"
+  [ -z "${'$'}VER" ] || break
+  sleep 2
+done
+[ -n "${'$'}VER" ] || rollback "server did not answer /v1/static-data/version within 60s"
+echo ">> static-data/version: ${'$'}VER"
+
+TOKEN_HDR="$(mktemp)"
+trap 'rm -f "${'$'}TOKEN_HDR"' EXIT
+printf 'X-Worker-Token: %%s\n' "$(grep '^LORDMAKER_WORKER_TOKEN=' "${'$'}ENV_FILE" | cut -d= -f2-)" > "${'$'}TOKEN_HDR"
+SC="$(curl -sS -m 60 -X POST -H @"${'$'}TOKEN_HDR" "${'$'}BASE/internal/selfcheck" || true)"
+echo ">> selfcheck: ${'$'}SC"
+echo "${'$'}SC" | jq -e '.ok == true and .workerThread == true and .schedulerThread == true' >/dev/null || rollback "selfcheck not ok"
+# 3자 비교: 체크아웃 상수(app/main.py) = version 응답 = selfcheck 응답
+RV="$(grep -E '^RULES_VERSION = [0-9]+' "${'$'}REL/app/main.py" | grep -oE '[0-9]+' | head -1 || true)"
+DV="$(grep -E '^STATIC_DATA_VERSION = [0-9]+' "${'$'}REL/app/main.py" | grep -oE '[0-9]+' | head -1 || true)"
+[ -n "${'$'}RV" ] && [ -n "${'$'}DV" ] || rollback "RULES_VERSION/STATIC_DATA_VERSION not found in app/main.py"
+CV="[${'$'}RV,${'$'}DV]"
+SV="$(echo "${'$'}SC" | jq -c '[.rulesVersion, .staticDataVersion]')"
+VV="$(echo "${'$'}VER" | jq -c '[.rulesVersion, .staticDataVersion]')"
+echo ">> versions: checkout ${'$'}CV, static-data ${'$'}VV, selfcheck ${'$'}SV, selfcheck totalTurns $(echo "${'$'}SC" | jq -r '.totalTurns')"
+[ "${'$'}SV" = "${'$'}CV" ] && [ "${'$'}VV" = "${'$'}CV" ] || rollback "version mismatch: checkout ${'$'}CV, static-data ${'$'}VV, selfcheck ${'$'}SV"
+echo "##teamcity[buildStatus text='lordmaker@${'$'}PORT rules/data ${'$'}SV (server ${'$'}{SREV:0:7}, LMCore #${'$'}LMB)']"
+
+# 6. 오래된 릴리스 정리: current-*/previous-*가 가리키지 않는 것 중 최신 6개만 남김
+cd "${'$'}ROOT/releases"
+KEEP="$(readlink -f "${'$'}ROOT"/current-* "${'$'}ROOT"/previous-* 2>/dev/null | sort -u)"
+ls -1t | tail -n +7 | while read -r d; do
+  grep -qxF "${'$'}ROOT/releases/${'$'}d" <<< "${'$'}KEEP" || { rm -rf -- "${'$'}d"; echo ">> removed old release ${'$'}d"; }
+done
+echo ">> deploy ok: lordmaker@${'$'}PORT"
+            """.trimIndent()
+        }
+    }
+
+    dependencies {
+        artifacts(LMCore) {
+            buildRule = lastSuccessful("main")
+            artifactRules = "lmcore*.so => lmcore"
         }
     }
 
