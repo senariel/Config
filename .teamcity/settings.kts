@@ -63,9 +63,11 @@ object BuildEditor : BuildType({
     name = "Build Editor"
 
     params {
-        param("env.UE5_DIST_PATH", """D:\Shared\UE5""")
+        // 빌드 머신(.180) 공유 폴더. 에이전트 서비스는 매핑 드라이브(Z:)를 못 보므로 UNC로 쓴다
+        // (서비스 계정 tcagent에 cmdkey로 자격 증명 등록 필요).
+        param("env.UE5_DIST_PATH", """\\192.168.219.180\Shared\UE5""")
         // ArchiveBuild zip 보관 폴더. 배포 폴더(UE5_DIST_PATH) 밖이어야 함 — 안에 두면 다음 빌드의 robocopy /MIR이 지움.
-        param("env.UE5_ARCHIVE_PATH", """D:\Shared\UE5_Archives""")
+        param("env.UE5_ARCHIVE_PATH", """\\192.168.219.180\Shared\UE5_Archives""")
         // 보관할 zip 개수 (최근 N개만 유지, 0 = 무제한)
         param("ArchiveKeepCount", "3")
         // 동시 실행 액션 수 상한 (OOM 완화). 빈값/0 = 엔진 기본. 스텝이 에이전트 BuildConfiguration.xml에 머지.
@@ -420,8 +422,8 @@ object BuildEditor : BuildType({
     }
 
     requirements {
-        // 엔진 빌드는 Agent_Win64 고정 (UE5 체크아웃·LocalBuilds·Android SDK가 있는 머신). MAGI_Main 등으로 배정 방지.
-        equals("teamcity.agent.name", "Agent_Win64")
+        // 엔진 빌드는 Engine 에이전트 고정 (UE5 체크아웃·LocalBuilds·Android SDK가 있는 머신).
+        equals("devpub.role", "engine")
     }
 
     dependencies {
@@ -489,9 +491,8 @@ object FetchSource : BuildType({
     }
 
     requirements {
-        contains("teamcity.agent.jvm.os.name", "Windows 11")
         // Build Editor와 같은 머신(UE5 체크아웃 공유). 단독 실행 시에도 다른 에이전트에 체크아웃 안 생기게.
-        equals("teamcity.agent.name", "Agent_Win64")
+        equals("devpub.role", "engine")
     }
 })
 
@@ -578,7 +579,7 @@ object SyncFork : BuildType({
     }
 
     requirements {
-        contains("teamcity.agent.jvm.os.name", "Windows 11")
+        equals("devpub.role", "engine")
     }
 })
 

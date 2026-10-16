@@ -4,6 +4,7 @@ import jetbrains.buildServer.configs.kotlin.buildFeatures.perfmon
 import jetbrains.buildServer.configs.kotlin.buildFeatures.xmlReport
 import jetbrains.buildServer.configs.kotlin.buildSteps.powerShell
 import jetbrains.buildServer.configs.kotlin.buildSteps.script
+import jetbrains.buildServer.configs.kotlin.triggers.finishBuildTrigger
 import jetbrains.buildServer.configs.kotlin.triggers.schedule
 import jetbrains.buildServer.configs.kotlin.triggers.vcs
 import jetbrains.buildServer.configs.kotlin.vcs.GitVcsRoot
@@ -74,20 +75,105 @@ object ServerVcs : GitVcsRoot({
 
 object Client : Project({
     name = "Client"
-    description = "LordMaker 클라이언트(UE 5.8.3 설치형 엔진 D:/Shared/UE5)"
+    description = "LordMaker 클라이언트(UE 5.8.3 설치형 엔진 — 빌드 머신 공유 폴더 UE5를 Project 에이전트 로컬로 미러링해 사용)"
 
+    buildType(SyncEngine)
     buildType(EditorBuild)
     buildType(AndroidCompile)
     buildType(CoreGates)
     buildType(Package)
-    buildTypesOrder = arrayListOf(EditorBuild, AndroidCompile, CoreGates, Package)
+    buildTypesOrder = arrayListOf(SyncEngine, EditorBuild, AndroidCompile, CoreGates, Package)
 
-    // Windows 에이전트 경로 (P5에서 Project 에이전트 확정 시 갱신)
+    // Windows Project 에이전트(MAGI-LAPTOP) 경로. 빌드 머신(.180) 공유 폴더는 UNC로 쓴다 —
+    // 에이전트 서비스는 매핑 드라이브(Z:)를 못 본다(서비스 계정 tcagent에 cmdkey로 자격 증명 등록 필요).
     params {
-        param("env.UE5_ENGINE_ROOT", """D:\Shared\UE5""")
+        // 설치형 엔진 로컬 사본(Sync Engine이 UE5_DIST_SOURCE에서 robocopy /MIR로 맞춤)
+        param("env.UE5_ENGINE_ROOT", """C:\Dev\Engine\UE5""")
+        param("env.UE5_DIST_SOURCE", """\\192.168.219.180\Shared\UE5""")
         // 패키지 최신본(항상 1개, 매 빌드 교체)과 선택적 zip 보관 위치 — 아카이브는 배포 폴더 밖이어야 함(robocopy /MIR)
-        param("env.LM_DIST_PATH", """D:\Shared\LordMaker""")
-        param("env.LM_ARCHIVE_PATH", """D:\Shared\LordMaker_Archives""")
+        param("env.LM_DIST_PATH", """\\192.168.219.180\Shared\LordMaker""")
+        param("env.LM_ARCHIVE_PATH", """\\192.168.219.180\Shared\LordMaker_Archives""")
+    }
+})
+
+object SyncEngine : BuildType({
+    name = "Sync Engine"
+    description = "빌드 머신 공유 폴더의 설치형 엔진(UE5_DIST_SOURCE)을 이 에이전트의 UE5_ENGINE_ROOT로 robocopy /MIR. 엔진 Build Editor 성공 시 자동 + 수동."
+
+    steps {
+        powerShell {
+            name = "Mirror installed engine"
+            id = "Mirror_Engine"
+            scriptMode = script {
+                content = """
+${'$'}ErrorActionPreference = 'Continue'
+${'$'}src = ${'$'}env:UE5_DIST_SOURCE
+${'$'}dst = ${'$'}env:UE5_ENGINE_ROOT
+
+if (-not (Test-Path ${'$'}src)) {
+    Write-Host "##teamcity[buildProblem description='Share not reachable: ${'$'}src (service account credentials - cmdkey?)']"
+    exit 1
+}
+# 원본 점검: 비었으면 /MIR이 로컬 사본을 지워 버리므로 중단 (엔진 Distribute 도중 수동 실행은 피할 것)
+foreach (${'$'}rel in @('Engine\Build\InstalledBuild.txt', 'Engine\Binaries\Win64\UnrealEditor-Cmd.exe')) {
+    if (-not (Test-Path (Join-Path ${'$'}src ${'$'}rel))) {
+        Write-Host "##teamcity[buildProblem description='Engine source incomplete (missing ${'$'}rel) - mirror skipped, local copy kept']"
+        exit 1
+    }
+}
+function Get-Changelist([string]${'$'}root) {
+    ${'$'}f = Join-Path ${'$'}root 'Engine\Build\Build.version'
+    if (Test-Path ${'$'}f) { try { return (Get-Content ${'$'}f -Raw | ConvertFrom-Json).Changelist } catch {} }
+    return '-'
+}
+Write-Host (">> source CL " + (Get-Changelist ${'$'}src) + " / local CL " + (Get-Changelist ${'$'}dst))
+if (-not (Test-Path ${'$'}dst)) { New-Item -ItemType Directory -Force -Path ${'$'}dst | Out-Null }
+
+# 엔진 Distribute 스텝과 같은 방식: 백그라운드 robocopy + 60초 heartbeat (진행률이 \r-only라 무출력으로 오인될 수 있음)
+# 파일 목록은 수십만 줄이라 생략(/NFL /NDL), 끝의 요약만 남긴다
+${'$'}tmpLog = [System.IO.Path]::GetTempFileName()
+${'$'}rcArgs = @(${'$'}src, ${'$'}dst, '/MIR', '/MT:16', '/R:5', '/W:5', '/NP', '/NFL', '/NDL')
+Write-Host ">> robocopy 시작 (mirror): ${'$'}src -> ${'$'}dst"
+${'$'}proc = Start-Process -FilePath 'robocopy.exe' -ArgumentList ${'$'}rcArgs -RedirectStandardOutput ${'$'}tmpLog -PassThru -NoNewWindow
+${'$'}null = ${'$'}proc.Handle   # 종료 후 .ExitCode가 null 되는 것 방지
+${'$'}startTime = Get-Date
+while (!${'$'}proc.HasExited) {
+    Start-Sleep -Seconds 60
+    Write-Host ('[heartbeat] robocopy running for {0:N1} min' -f ((Get-Date) - ${'$'}startTime).TotalMinutes)
+}
+Get-Content ${'$'}tmpLog -Raw -ErrorAction SilentlyContinue | ForEach-Object { if (${'$'}_) { Write-Host ${'$'}_ } }
+Remove-Item ${'$'}tmpLog -ErrorAction SilentlyContinue
+${'$'}proc.WaitForExit()
+${'$'}rc = ${'$'}proc.ExitCode
+if (${'$'}null -eq ${'$'}rc) { ${'$'}rc = 0 }
+Write-Host (">> robocopy ExitCode = " + ${'$'}rc + " (0-7=성공, >=8=실패)")
+if (${'$'}rc -ge 8) {
+    # 흔한 원인: 로컬 엔진(에디터 등)이 실행 중이라 파일 잠김 / 공유 폴더 자격 증명(cmdkey) 없음
+    Write-Host "##teamcity[buildProblem description='robocopy failed (exit ${'$'}rc) - engine files in use or share access denied?']"
+    exit 1
+}
+Write-Host (">> local CL now " + (Get-Changelist ${'$'}dst))
+exit 0
+                """.trimIndent()
+            }
+        }
+    }
+
+    triggers {
+        // 엔진 Build Editor가 공유 폴더에 새 엔진을 배포하면 따라 받는다
+        finishBuildTrigger {
+            buildType = "DevPub_UnrealEngine5_BuildEditor"
+            successfulOnly = true
+            branchFilter = "+:*"
+        }
+    }
+
+    failureConditions {
+        executionTimeoutMin = 240
+    }
+
+    requirements {
+        equals("devpub.role", "project")
     }
 })
 
@@ -283,14 +369,14 @@ Write-Host (">> Core Gates OK: " + ${'$'}sums.Count + " runs, baseline DIFF " + 
 
 object Package : BuildType({
     name = "Package"
-    description = "Win64/Android Development 쿠킹·패키징. main 푸시 자동 + 수동. 최신본 1개만 D:/Shared/LordMaker/<플랫폼>에 교체, ArchiveBuild 체크 시에만 zip 보관."
+    description = "Win64/Android Development 쿠킹·패키징. main 푸시 자동 + 수동. 최신본 1개만 공유 폴더 LordMaker/<플랫폼>에 교체, ArchiveBuild 체크 시에만 zip 보관."
 
     // TeamCity 아티팩트로는 게시하지 않는다(빌드마다 서버에 쌓임 — 디스크 여유 부족).
     // 산출물: LM_DIST_PATH\Win64, LM_DIST_PATH\Android(APK + 기본 명령줄 UECommandLine.txt + BUILD_INFO.txt)
 
     params {
         checkbox("ArchiveBuild", "false", label = "빌드 아카이빙 (Zip)",
-                description = "체크하면 이번 결과를 D:/Shared/LordMaker_Archives에 zip으로 따로 보관(자동 삭제 안 함). 기본은 최신본 1개만 유지",
+                description = "체크하면 이번 결과를 공유 폴더 LordMaker_Archives에 zip으로 따로 보관(자동 삭제 안 함). 기본은 최신본 1개만 유지",
                 checked = "true", unchecked = "false")
         select("Platforms", "Win64+Android", label = "패키징 플랫폼",
                 options = listOf("Win64 + Android" to "Win64+Android", "Win64" to "Win64", "Android" to "Android"))
