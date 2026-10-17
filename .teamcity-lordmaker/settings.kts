@@ -253,7 +253,8 @@ object LinuxGates : BuildType({
                 else
                   echo ">> baseline 없음 - 비교 생략"
                 fi
-                UE_CMD="${'$'}UE/Engine/Binaries/Linux/UnrealEditor" Tools/core_gates.sh gates ${'$'}base 2>&1 | tee gates-run.log
+                # 저장소의 core_gates.sh는 실행 권한 없이(100644, Windows 커밋) 저장돼 있어 bash로 직접 실행
+                UE_CMD="${'$'}UE/Engine/Binaries/Linux/UnrealEditor" bash Tools/core_gates.sh gates ${'$'}base 2>&1 | tee gates-run.log
                 shopt -s nullglob
                 sums=(gates/*.summary.txt)
                 if [ ${'$'}{#sums[@]} -eq 0 ]; then echo "##teamcity[buildProblem description='Linux gates produced no summaries']"; exit 1; fi
