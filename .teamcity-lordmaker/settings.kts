@@ -203,6 +203,9 @@ object LinuxGates : BuildType({
         // 엔진은 다른 구성(UnrealEngine5 / Build Linux Editor)의 체크아웃 폴더를 그대로 쓴다
         param("env.UE5_LINUX_ROOT", "/srv/teamcity/work/UE5-linux")
         param("MaxParallelActions", "8")
+        // Client 공통 env.JAVA_HOME(%env.JDK_21_0_x64%, Windows Gradle용)을 물려받으면 리눅스 에이전트에 그 속성이 없어
+        // "no compatible agents"가 됨 → 리눅스 에이전트에 있는 값으로 덮어씀 (리눅스 UE 게이트는 Java 불필요)
+        param("env.JAVA_HOME", "%env.JRE_HOME%")
     }
 
     vcs {
