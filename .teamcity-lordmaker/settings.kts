@@ -959,10 +959,15 @@ sed 's/^/   /' "${'$'}REL/DEPLOY_INFO.txt"
 DB="$(grep '^LORDMAKER_DB=' "${'$'}ENV_FILE" | cut -d= -f2-)"
 if [ -f "${'$'}DB" ]; then
   BK="/mnt/d/LordMaker/backups/${'$'}PORT/$(date +%%Y%%m%%d-%%H%%M%%S)-${'$'}{SREV:0:7}.db"
+  # 중단된 백업이 '백업'으로 오인되지 않게 .part로 쓰고 검사가 끝난 뒤에만 .db로 바꾼다 (예전 실패의 잔재 .part는 지움)
+  rm -f -- "/mnt/d/LordMaker/backups/${'$'}PORT"/*.db.part
   # 라이브 서버가 쓰는 중이면 잠금이 잠깐 걸린다 → 최대 30초 기다림 (없으면 'database is locked'로 즉시 실패, Deploy #4)
-  sqlite3 -cmd ".timeout 30000" "${'$'}DB" ".backup '${'$'}BK'"
-  QC="$(sqlite3 "${'$'}BK" 'PRAGMA quick_check;')"
-  [ "${'$'}QC" = "ok" ] || { echo "##teamcity[buildProblem description='DB backup quick_check failed: ${'$'}QC']"; exit 1; }
+  if ! sqlite3 -cmd ".timeout 30000" "${'$'}DB" ".backup '${'$'}BK.part'"; then
+    rm -f -- "${'$'}BK.part"; echo "##teamcity[buildProblem description='DB backup failed (sqlite3 .backup)']"; exit 1
+  fi
+  QC="$(sqlite3 "${'$'}BK.part" 'PRAGMA quick_check;')"
+  [ "${'$'}QC" = "ok" ] || { rm -f -- "${'$'}BK.part"; echo "##teamcity[buildProblem description='DB backup quick_check failed: ${'$'}QC']"; exit 1; }
+  mv -- "${'$'}BK.part" "${'$'}BK"
   echo ">> DB backup: ${'$'}BK ($(du -h "${'$'}BK" | cut -f1), quick_check ok)"
   ls -1t "/mnt/d/LordMaker/backups/${'$'}PORT"/*.db 2>/dev/null | tail -n +11 | while read -r old; do rm -f -- "${'$'}old"; echo ">> removed old backup $(basename "${'$'}old")"; done
 else
