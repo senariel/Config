@@ -695,11 +695,13 @@ object LMCore : BuildType({
     artifactRules = "build/lmcore*.so"
 
     vcs {
+        // Source/LordMaker: ctest rng_lint(LordMaker#129)가 UE 쪽 코드의 플랫폼 난수 사용을 검사 — 체크아웃·트리거 둘 다 필요
         // 필요한 경로만 부분 체크아웃 (LFS 대상 콘텐츠 제외)
         root(GameVcs, """
             +:Core
             +:Source/LMCore
             +:Content/Data
+            +:Source/LordMaker
         """.trimIndent())
         checkoutMode = CheckoutMode.ON_AGENT
         checkoutDir = "LordMakerCore"
@@ -766,6 +768,7 @@ fi
             triggerRules = """
                 +:Core/**
                 +:Source/LMCore/**
+                +:Source/LordMaker/**
             """.trimIndent()
         }
     }
