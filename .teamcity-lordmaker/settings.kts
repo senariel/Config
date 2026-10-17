@@ -169,7 +169,7 @@ exit 0
     triggers {
         // 엔진 Build Editor가 공유 폴더에 새 엔진을 배포하면 따라 받는다
         finishBuildTrigger {
-            // 일시 중지(2026-10-17 사용자): 개발 노트북 UBT 뮤텍스 충돌 — 다시 켤 땐 이 줄 삭제
+            // 수동 전용(2026-10-17 사용자 결정): 개발 노트북 UBT 뮤텍스 충돌 — 자동 회귀는 Linux Gates(UE)·LMCore가 맡음
             enabled = false
             buildType = "DevPub_UnrealEngine5_BuildEditor"
             successfulOnly = true
@@ -192,7 +192,7 @@ exit 0
 // 실행 방식은 클라 문서 `.claude/dev/design/리눅스 게이트 실행.md` (LFS 미취득 + .uasset/.umap 제거, UnrealEditor가 커맨드릿 실행 파일).
 object LinuxGates : BuildType({
     name = "Linux Gates (UE)"
-    description = "리눅스 UE로 LMSimTest 게이트 실행 (Agent_Linux). Windows Core Gates 마지막 성공 main과 비교. 시험 단계 — 수동 실행."
+    description = "리눅스 UE로 LMSimTest 게이트 실행 (Agent_Linux). Windows Core Gates 마지막 성공 main과 비교. 모든 브랜치 푸시마다 자동(2026-10-17~)."
 
     artifactRules = """
         gates => gates.zip
@@ -270,6 +270,19 @@ object LinuxGates : BuildType({
                 fi
                 if [ -n "${'$'}bad" ]; then echo "##teamcity[buildProblem description='Linux gates exit!=0:${'$'}bad']"; exit 1; fi
                 echo ">> Linux gates OK: ${'$'}{#sums[@]} runs, DIFF vs Windows: ${'$'}{diffs:-none}"
+            """.trimIndent()
+        }
+    }
+
+    triggers {
+        // 게임 회귀 게이트의 자동 실행처 — 노트북 Core Gates 대신 .180에서 푸시마다 (Agent_Linux, 몇 분)
+        // uasset·맵 같은 에셋만 바뀐 커밋은 게이트 결과에 영향이 없어 제외 (규칙 데이터 Content/Data는 포함)
+        vcs {
+            branchFilter = "+:*"
+            triggerRules = """
+                +:.
+                -:Content/**
+                +:Content/Data/**
             """.trimIndent()
         }
     }
@@ -370,7 +383,7 @@ Write-Host ">> LordMaker Android OK"
 
     triggers {
         vcs {
-            // 일시 중지(2026-10-17 사용자): 개발 노트북 UBT 뮤텍스 충돌 — 다시 켤 땐 이 줄 삭제
+            // 수동 전용(2026-10-17 사용자 결정): 개발 노트북 UBT 뮤텍스 충돌 — 자동 회귀는 Linux Gates(UE)·LMCore가 맡음
             enabled = false
             branchFilter = "+:*"
         }
@@ -459,7 +472,7 @@ Write-Host (">> Core Gates OK: " + ${'$'}sums.Count + " runs, baseline DIFF " + 
     triggers {
         // 체인 끝에 트리거 → 푸시마다 Editor Build → Core Gates
         vcs {
-            // 일시 중지(2026-10-17 사용자): 개발 노트북 UBT 뮤텍스 충돌 — 다시 켤 땐 이 줄 삭제
+            // 수동 전용(2026-10-17 사용자 결정): 개발 노트북 UBT 뮤텍스 충돌 — 자동 회귀는 Linux Gates(UE)·LMCore가 맡음
             enabled = false
             branchFilter = "+:*"
             watchChangesInDependencies = true
