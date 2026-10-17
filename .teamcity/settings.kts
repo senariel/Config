@@ -36,16 +36,18 @@ version = "2025.11"
 project {
 
     vcsRoot(EngineVcs)
+    vcsRoot(EngineVcsLinux)
 
     buildType(FetchSource)
     buildType(SyncFork)
     buildType(BuildEditor)
+    buildType(BuildLinuxEditor)
 
     params {
         select("CleanMode", "Incremental", label = "빌드 클린 모드", description = "빌드 전 정리 범위. Run Custom Build에서 변경 가능.",
                 options = listOf("빠른 빌드 (클린 없음)" to "Incremental", "소스 정리 (고아 파일 제거)" to "CleanSource", "전체 재빌드 (Binaries/Intermediate 초기화)" to "FullRebuild"))
     }
-    buildTypesOrder = arrayListOf(SyncFork, FetchSource, BuildEditor)
+    buildTypesOrder = arrayListOf(SyncFork, FetchSource, BuildEditor, BuildLinuxEditor)
 
     features {
         // 빌드 기록 정리: 10일 보관 (UI에서 추가했던 것을 patch에서 병합)
@@ -584,6 +586,96 @@ object SyncFork : BuildType({
 
     requirements {
         equals("devpub.role", "engine")
+    }
+})
+
+// 리눅스 게이트용 에디터 (2026-10-17~): Client Core Gates의 "언리얼 검증"(UE↔코어 동등성 커맨드릿)을
+// 개발 노트북 대신 .180(Agent_Linux)에서 돌리기 위한 경량 빌드. 설치형 패키징·Android·DDC 없이
+// 엔진 소스 트리에서 UnrealEditor(+ShaderCompileWorker)만 Linux Development로 빌드한다.
+// 게임 모듈(LordMakerEditor, 게이트용 플러그인 구성)은 클라 쪽 분리 작업 뒤 이어서 붙인다.
+// .180은 라이브 게임 서버와 같이 쓰므로 에이전트 유닛에 CPUWeight/IOWeight=20, MemoryMax=16G가 걸려 있고
+// (lordmaker@는 OOMScoreAdjust=-500), 여기서도 동시 작업 수를 제한한다.
+object BuildLinuxEditor : BuildType({
+    name = "Build Linux Editor (Gates)"
+    description = "리눅스 게이트용 UnrealEditor(Linux Development, 엔진 소스 빌드). 엔진 release 변경 시 자동 + 수동. Agent_Linux."
+
+    params {
+        // MemoryMax=16G 안에서 컴파일이 OOM 나지 않을 수준. 느리면 올리고, 메모리 경고가 보이면 내린다.
+        param("MaxParallelActions", "8")
+    }
+
+    vcs {
+        root(EngineVcsLinux)
+        checkoutMode = CheckoutMode.ON_AGENT
+        checkoutDir = "UE5-linux"
+    }
+
+    steps {
+        script {
+            name = "Dependencies + toolchain"
+            id = "Linux_Setup"
+            scriptContent = """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                echo ">> disk: ${'$'}(df -h --output=avail,size . | tail -1)  mem: ${'$'}(free -g | awk '/Mem:/{print ${'$'}7"G free of "${'$'}2"G"}')"
+                # 리눅스 에디터에 필요 없는 플랫폼 바이너리는 받지 않는다(디스크·시간 절약)
+                Engine/Build/BatchFiles/Linux/GitDependencies.sh --force --exclude=Win64 --exclude=Win32 --exclude=Mac --exclude=Android --exclude=IOS --exclude=TVOS
+                # 엔진 번들 clang 툴체인 (Setup.sh의 build-essential apt 설치 단계는 건너뜀 — 에이전트는 sudo 없음)
+                (cd Engine/Build/BatchFiles/Linux && ./SetupToolchain.sh)
+                echo ">> disk after deps: ${'$'}(df -h --output=avail . | tail -1)"
+            """.trimIndent()
+        }
+        script {
+            name = "Build UnrealEditor (Linux Development)"
+            id = "Linux_Build_Editor"
+            scriptContent = """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                ubt() { Engine/Build/BatchFiles/Linux/Build.sh "${'$'}@" -MaxParallelActions=%MaxParallelActions%; }
+                t0=${'$'}(date +%%s)
+                ubt ShaderCompileWorker Linux Development
+                ubt UnrealEditor Linux Development
+                t1=${'$'}(date +%%s)
+                echo ">> UnrealEditor Linux OK in ${'$'}(( (t1-t0)/60 )) min"
+                ls -la Engine/Binaries/Linux/UnrealEditor Engine/Binaries/Linux/ShaderCompileWorker
+                echo ">> tree size: ${'$'}(du -sh . 2>/dev/null | cut -f1)  disk left: ${'$'}(df -h --output=avail . | tail -1)"
+            """.trimIndent()
+        }
+    }
+
+    triggers {
+        // 엔진 소스는 매일 03:00 Sync Fork가 갱신 → release에 실제 변경이 있을 때만 돈다
+        vcs {
+            quietPeriodMode = VcsTrigger.QuietPeriodMode.USE_DEFAULT
+        }
+    }
+
+    failureConditions {
+        executionTimeoutMin = 720
+    }
+
+    features {
+        perfmon {
+            param("teamcity.perfmon.feature.enabled", "true")
+        }
+    }
+
+    requirements {
+        equals("devpub.role", "server")
+    }
+})
+
+// 리눅스 빌드 전용 VCS 루트: Windows(EngineVcs)와 같은 저장소·토큰(같은 프로젝트에서 발급)이지만
+// 얕은 복제로 받아 .180 디스크·시간을 아낀다. Windows 쪽 체크아웃 방식은 건드리지 않음.
+object EngineVcsLinux : GitVcsRoot({
+    name = "UnrealEngine release (Linux shallow)"
+    url = "https://github.com/senariel/UnrealEngine"
+    branch = "refs/heads/release"
+    branchSpec = "refs/heads/release"
+    checkoutPolicy = GitVcsRoot.AgentCheckoutPolicy.SHALLOW_CLONE
+    authMethod = token {
+        userName = "oauth2"
+        tokenId = "tc_token_id:CID_3ab2f5c96314802c7074714f2b03c3a5:-1:62ad1ec8-56b9-4b2a-adce-68a33ee027a2"
     }
 })
 
