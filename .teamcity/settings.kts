@@ -631,8 +631,11 @@ object BuildLinuxEditor : BuildType({
             scriptContent = """
                 #!/usr/bin/env bash
                 set -euo pipefail
+                export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
                 ubt() { Engine/Build/BatchFiles/Linux/Build.sh "${'$'}@" -MaxParallelActions=%MaxParallelActions%; }
                 t0=${'$'}(date +%%s)
+                # 소스 트리에는 UBT 바이너리가 없다 — 먼저 빌드(변경이 없으면 건너뜀)
+                Engine/Build/BatchFiles/BuildUBT.sh
                 ubt ShaderCompileWorker Linux Development
                 ubt UnrealEditor Linux Development
                 t1=${'$'}(date +%%s)
