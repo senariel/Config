@@ -349,7 +349,7 @@ UBA executor가 Horde에 `GET http://<server>:13340/api/v1/server/auth`로 인�
 
 설계: `docs/superpowers/specs/2026-10-16-linux-build-machine-design.md`. 위키 `BuildMachine/01·02·08·10`에 현황·함정·남은 단계.
 
-- 192.168.219.180은 이제 **Ubuntu 26.04 `MAGI-AM02`** (예전 Windows+WSL "AYA-ZZANG"). TeamCity 서버·Caddy·samba는 Docker(`/home/gray/docker/docker-compose.yml`). `Agent_Win64`는 사라져 **삭제**했고, 에이전트는 `Agent_Linux`(id 231, 호스트 systemd, `devpub.role=server`) 하나.
+- 192.168.219.180은 이제 **Ubuntu 26.04 `MAGI-AM02`** (예전 Windows+WSL "AYA-ZZANG"). TeamCity 서버·Caddy·samba는 Docker(`/home/gray/docker/docker-compose.yml`). `Agent_Win64`는 사라져 **삭제**했고, 에이전트는 `Agent_Linux`(id 231, 호스트 systemd, `devpub.role=server`)와 Windows `Agent_Engine`(242, MAGI)·`Agent_Project`(243, MAGI-LAPTOP) — 2026-10-16~.
 - **배정은 이름이 아니라 `devpub.role`**: LordMaker Server·Device·**Linux Gates (UE)** = `server`(Agent_Linux), Client = `project`(`Agent_Project`, MAGI-LAPTOP), UnrealEngine5 = `engine`(`Agent_Engine`, MAGI) — 단 `Build Linux Editor (Gates)`는 `server`. Windows 에이전트는 서비스 계정 `tcagent`, 공유 폴더는 UNC `\\192.168.219.180\Shared\…`(서비스는 `Z:` 같은 매핑 드라이브를 못 봄 → `tcagent`에 `cmdkey`).
 - 이 문서 아래의 `Agent_Win64`·`D:\…`·PowerShell 설명은 **Windows 시절 기준**이다. LordMaker Server·Device는 bash, LMCore는 gcc로 `.so`를 만든다(FP 결정론 플래그를 빌드가 검사).
 - 함정 3건(2026-10-16):
