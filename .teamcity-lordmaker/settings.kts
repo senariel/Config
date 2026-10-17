@@ -168,6 +168,8 @@ exit 0
     triggers {
         // 엔진 Build Editor가 공유 폴더에 새 엔진을 배포하면 따라 받는다
         finishBuildTrigger {
+            // 일시 중지(2026-10-17 사용자): 개발 노트북 UBT 뮤텍스 충돌 — 다시 켤 땐 이 줄 삭제
+            enabled = false
             buildType = "DevPub_UnrealEngine5_BuildEditor"
             successfulOnly = true
             branchFilter = "+:*"
@@ -264,6 +266,8 @@ Write-Host ">> LordMaker Android OK"
 
     triggers {
         vcs {
+            // 일시 중지(2026-10-17 사용자): 개발 노트북 UBT 뮤텍스 충돌 — 다시 켤 땐 이 줄 삭제
+            enabled = false
             branchFilter = "+:*"
         }
     }
@@ -351,6 +355,8 @@ Write-Host (">> Core Gates OK: " + ${'$'}sums.Count + " runs, baseline DIFF " + 
     triggers {
         // 체인 끝에 트리거 → 푸시마다 Editor Build → Core Gates
         vcs {
+            // 일시 중지(2026-10-17 사용자): 개발 노트북 UBT 뮤텍스 충돌 — 다시 켤 땐 이 줄 삭제
+            enabled = false
             branchFilter = "+:*"
             watchChangesInDependencies = true
         }
