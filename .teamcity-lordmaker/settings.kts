@@ -82,7 +82,8 @@ object Client : Project({
     buildType(AndroidCompile)
     buildType(CoreGates)
     buildType(Package)
-    buildTypesOrder = arrayListOf(SyncEngine, EditorBuild, AndroidCompile, CoreGates, Package)
+    buildType(LinuxGates)
+    buildTypesOrder = arrayListOf(SyncEngine, EditorBuild, AndroidCompile, CoreGates, Package, LinuxGates)
 
     // Windows Project 에이전트(MAGI-LAPTOP) 경로. 빌드 머신(.180) 공유 폴더는 UNC로 쓴다 —
     // 에이전트 서비스는 매핑 드라이브(Z:)를 못 본다(서비스 계정 tcagent에 cmdkey로 자격 증명 등록 필요).
@@ -182,6 +183,105 @@ exit 0
 
     requirements {
         equals("devpub.role", "project")
+    }
+})
+
+// 리눅스 언리얼 검증 게이트 (2026-10-17~ 시험): Core Gates(LMSimTest 커맨드릿)를 .180 Agent_Linux에서
+// 리눅스 경량 UE(UnrealEngine5 / Build Linux Editor (Gates)가 만든 엔진 소스 트리)로 돌린다.
+// 개발 노트북 UBT 뮤텍스 충돌을 없애는 게 목적. 판정 = 11종 exit 0, Windows Core Gates 기준선 대비 DIFF는 경고.
+// 실행 방식은 클라 문서 `.claude/dev/design/리눅스 게이트 실행.md` (LFS 미취득 + .uasset/.umap 제거, UnrealEditor가 커맨드릿 실행 파일).
+object LinuxGates : BuildType({
+    name = "Linux Gates (UE)"
+    description = "리눅스 UE로 LMSimTest 게이트 실행 (Agent_Linux). Windows Core Gates 마지막 성공 main과 비교. 시험 단계 — 수동 실행."
+
+    artifactRules = """
+        gates => gates.zip
+        gates-run.log
+    """.trimIndent()
+
+    params {
+        // 엔진은 다른 구성(UnrealEngine5 / Build Linux Editor)의 체크아웃 폴더를 그대로 쓴다
+        param("env.UE5_LINUX_ROOT", "/srv/teamcity/work/UE5-linux")
+        param("MaxParallelActions", "8")
+    }
+
+    vcs {
+        root(GameVcs)
+        checkoutMode = CheckoutMode.ON_AGENT
+        checkoutDir = "LordMakerLinux"
+    }
+
+    steps {
+        script {
+            name = "Build LordMakerEditor (Linux)"
+            id = "Linux_Build_Game"
+            scriptContent = """
+                #!/usr/bin/env bash
+                set -uo pipefail
+                UE="%env.UE5_LINUX_ROOT%"
+                if [ ! -x "${'$'}UE/Engine/Binaries/Linux/UnrealEditor" ]; then
+                  echo "##teamcity[buildProblem description='Linux UnrealEditor not found under ${'$'}UE - run UnrealEngine5 / Build Linux Editor (Gates) first']"; exit 1
+                fi
+                # LFS를 받지 않으므로 .uasset/.umap은 포인터뿐 — 남아 있으면 AssetRegistry가 'Package is unloadable'로 커맨드릿을 exit 1로 만든다
+                n=${'$'}(find Content -type f \( -name '*.uasset' -o -name '*.umap' \) | wc -l)
+                find Content -type f \( -name '*.uasset' -o -name '*.umap' \) -delete
+                echo ">> removed ${'$'}n .uasset/.umap (LFS 미사용)"
+                export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
+                t0=${'$'}(date +%%s)
+                "${'$'}UE/Engine/Build/BatchFiles/Linux/Build.sh" LordMakerEditor Linux Development -Project="${'$'}PWD/LordMaker.uproject" -WaitMutex -MaxParallelActions=%MaxParallelActions%
+                rc=${'$'}?
+                if [ ${'$'}rc -ne 0 ]; then echo "##teamcity[buildProblem description='LordMakerEditor Linux build failed (exit ${'$'}rc)']"; exit ${'$'}rc; fi
+                echo ">> LordMakerEditor Linux OK in ${'$'}(( (${'$'}(date +%%s)-t0)/60 )) min"
+            """.trimIndent()
+        }
+        script {
+            name = "core_gates.sh (Linux)"
+            id = "Linux_Core_Gates"
+            scriptContent = """
+                #!/usr/bin/env bash
+                set -uo pipefail
+                UE="%env.UE5_LINUX_ROOT%"
+                rm -rf gates gates-baseline gates-baseline.zip gates-run.log
+                # 기준선 = Windows Core Gates의 마지막 성공 main 아티팩트 (없으면 비교 생략)
+                base=""
+                if curl -sf -u "%system.teamcity.auth.userId%:%system.teamcity.auth.password%" -o gates-baseline.zip \
+                     "%teamcity.serverUrl%/httpAuth/repository/download/LordMaker_CoreGates/.lastSuccessful/gates.zip?branch=main"; then
+                  python3 -m zipfile -e gates-baseline.zip gates-baseline && base="gates-baseline" && echo ">> baseline: Windows Core Gates last successful main"
+                else
+                  echo ">> baseline 없음 - 비교 생략"
+                fi
+                UE_CMD="${'$'}UE/Engine/Binaries/Linux/UnrealEditor" Tools/core_gates.sh gates ${'$'}base 2>&1 | tee gates-run.log
+                shopt -s nullglob
+                sums=(gates/*.summary.txt)
+                if [ ${'$'}{#sums[@]} -eq 0 ]; then echo "##teamcity[buildProblem description='Linux gates produced no summaries']"; exit 1; fi
+                bad=""
+                for s in "${'$'}{sums[@]}"; do
+                  e=${'$'}(grep -oE 'exit=[0-9]+' "${'$'}s" | tail -1)
+                  [ "${'$'}e" = "exit=0" ] || bad="${'$'}bad ${'$'}(basename "${'$'}s")"
+                done
+                diffs=${'$'}(grep -E '^DIFF[[:space:]]+' gates-run.log | awk '{print ${'$'}2}' | paste -sd, -)
+                if [ -n "${'$'}diffs" ]; then
+                  echo "##teamcity[message text='Linux gates vs Windows baseline DIFF: ${'$'}diffs' status='WARNING']"
+                  echo "##teamcity[buildStatus text='{build.status.text}; DIFF vs Windows: ${'$'}diffs']"
+                fi
+                if [ -n "${'$'}bad" ]; then echo "##teamcity[buildProblem description='Linux gates exit!=0:${'$'}bad']"; exit 1; fi
+                echo ">> Linux gates OK: ${'$'}{#sums[@]} runs, DIFF vs Windows: ${'$'}{diffs:-none}"
+            """.trimIndent()
+        }
+    }
+
+    failureConditions {
+        executionTimeoutMin = 180
+    }
+
+    features {
+        perfmon {
+            param("teamcity.perfmon.feature.enabled", "true")
+        }
+    }
+
+    requirements {
+        equals("devpub.role", "server")
     }
 })
 

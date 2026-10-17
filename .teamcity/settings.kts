@@ -602,6 +602,9 @@ object BuildLinuxEditor : BuildType({
     params {
         // MemoryMax=16G 안에서 컴파일이 OOM 나지 않을 수준. 느리면 올리고, 메모리 경고가 보이면 내린다.
         param("MaxParallelActions", "8")
+        // 엔진 트리(약 123GB)는 엔진 변경 때만 빌드돼 며칠씩 안 쓰일 수 있음 → TeamCity 자동 정리(기본 8일 미사용 삭제) 끔.
+        // Client / Linux Gates (UE)가 이 폴더를 엔진으로 쓴다.
+        param("system.teamcity.build.checkoutDir.expireHours", "never")
     }
 
     vcs {
