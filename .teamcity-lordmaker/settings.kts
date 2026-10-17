@@ -959,7 +959,8 @@ sed 's/^/   /' "${'$'}REL/DEPLOY_INFO.txt"
 DB="$(grep '^LORDMAKER_DB=' "${'$'}ENV_FILE" | cut -d= -f2-)"
 if [ -f "${'$'}DB" ]; then
   BK="/mnt/d/LordMaker/backups/${'$'}PORT/$(date +%%Y%%m%%d-%%H%%M%%S)-${'$'}{SREV:0:7}.db"
-  sqlite3 "${'$'}DB" ".backup '${'$'}BK'"
+  # 라이브 서버가 쓰는 중이면 잠금이 잠깐 걸린다 → 최대 30초 기다림 (없으면 'database is locked'로 즉시 실패, Deploy #4)
+  sqlite3 -cmd ".timeout 30000" "${'$'}DB" ".backup '${'$'}BK'"
   QC="$(sqlite3 "${'$'}BK" 'PRAGMA quick_check;')"
   [ "${'$'}QC" = "ok" ] || { echo "##teamcity[buildProblem description='DB backup quick_check failed: ${'$'}QC']"; exit 1; }
   echo ">> DB backup: ${'$'}BK ($(du -h "${'$'}BK" | cut -f1), quick_check ok)"
