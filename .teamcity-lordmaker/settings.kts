@@ -83,7 +83,8 @@ object Client : Project({
     buildType(CoreGates)
     buildType(Package)
     buildType(LinuxGates)
-    buildTypesOrder = arrayListOf(SyncEngine, EditorBuild, AndroidCompile, CoreGates, Package, LinuxGates)
+    buildType(CoreProgramSpike)   // 임시 — 스파이크 확인 후 삭제
+    buildTypesOrder = arrayListOf(SyncEngine, EditorBuild, AndroidCompile, CoreGates, Package, LinuxGates, CoreProgramSpike)
 
     // Windows Project 에이전트(MAGI-LAPTOP) 경로. 빌드 머신(.180) 공유 폴더는 UNC로 쓴다 —
     // 에이전트 서비스는 매핑 드라이브(Z:)를 못 본다(서비스 계정 tcagent에 cmdkey로 자격 증명 등록 필요).
@@ -295,6 +296,77 @@ object LinuxGates : BuildType({
         perfmon {
             param("teamcity.perfmon.feature.enabled", "true")
         }
+    }
+
+    requirements {
+        equals("devpub.role", "server")
+    }
+})
+
+// 임시(2026-10-18~): Program 타깃 LordMakerCore 0단계 스파이크 측정용 — 클라 세션 요청, 사용자 승인.
+// 결과(결정 D0)를 보고 지운다. 정식 구성 아님 — 트리거 없음, 수동 실행만.
+object CoreProgramSpike : BuildType({
+    name = "Core Program Spike (temp)"
+    description = "임시: Program 타깃 LordMakerCore를 리눅스 엔진 소스 트리로 처음부터·증분 빌드하고 실행해 [CORESPIKE] 출력과 시간을 남김. 수동, 확인 후 삭제."
+
+    artifactRules = """
+        spike-run.log
+    """.trimIndent()
+
+    params {
+        param("env.UE5_LINUX_ROOT", "/srv/teamcity/work/UE5-linux")
+        param("MaxParallelActions", "8")
+        // Client 공통 env.JAVA_HOME(Windows JDK 속성 참조)을 덮어써야 Agent_Linux에 배정됨
+        param("env.JAVA_HOME", "%env.JRE_HOME%")
+    }
+
+    vcs {
+        // 에디터 Intermediate와 섞이지 않게 별도 폴더, 에셋(LFS)은 받지 않음 — 규칙 데이터 Content/Data만
+        root(GameVcs, """
+            +:.
+            -:Content
+            +:Content/Data
+        """.trimIndent())
+        checkoutMode = CheckoutMode.ON_AGENT
+        checkoutDir = "LordMakerCoreSpike"
+    }
+
+    steps {
+        script {
+            name = "Build (clean + incremental) and run LordMakerCore"
+            id = "Core_Spike"
+            scriptContent = """
+                #!/usr/bin/env bash
+                set -uo pipefail
+                UE="%env.UE5_LINUX_ROOT%"
+                REPO="${'$'}PWD"
+                export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
+                b() { "${'$'}UE/Engine/Build/BatchFiles/Linux/Build.sh" LordMakerCore Linux Development -Project="${'$'}REPO/LordMaker.uproject" -WaitMutex -MaxParallelActions=%MaxParallelActions%; }
+                # "처음부터" 측정: 이 체크아웃의 이전 산출물 제거 (Unique build environment라 엔진 모듈도 프로젝트 Intermediate에 빌드됨)
+                rm -rf -- "${'$'}REPO/Binaries/Linux" "${'$'}REPO/Intermediate/Build/Linux"
+                echo ">> mem: ${'$'}(free -g | awk '/Mem:/{print ${'$'}7"G free of "${'$'}2"G"}')  disk: ${'$'}(df -h --output=avail . | tail -1)"
+                t0=${'$'}(date +%%s)
+                b; rc=${'$'}?
+                t1=${'$'}(date +%%s)
+                echo ">> CLEAN build exit=${'$'}rc in ${'$'}((t1-t0)) s (${'$'}(( (t1-t0)/60 )) min)"
+                if [ ${'$'}rc -ne 0 ]; then echo "##teamcity[buildProblem description='LordMakerCore clean build failed (exit ${'$'}rc)']"; exit ${'$'}rc; fi
+                b; rc2=${'$'}?
+                t2=${'$'}(date +%%s)
+                echo ">> INCREMENTAL build exit=${'$'}rc2 in ${'$'}((t2-t1)) s"
+                ls -la "${'$'}REPO/Binaries/Linux/" || true
+                bin="${'$'}REPO/Binaries/Linux/LordMakerCore"
+                [ -x "${'$'}bin" ] || { echo "##teamcity[buildProblem description='LordMakerCore binary not found']"; exit 1; }
+                "${'$'}bin" "${'$'}REPO/LordMaker.uproject" -stdout > spike-run.log 2>&1; rc3=${'$'}?
+                echo ">> RUN exit=${'$'}rc3"
+                grep -a 'CORESPIKE' spike-run.log || echo ">> (no [CORESPIKE] lines)"
+                echo ">> SUMMARY clean=${'$'}((t1-t0))s incremental=${'$'}((t2-t1))s run_exit=${'$'}rc3"
+                [ ${'$'}rc3 -eq 0 ] || { echo "##teamcity[buildProblem description='LordMakerCore run exit ${'$'}rc3']"; exit 1; }
+            """.trimIndent()
+        }
+    }
+
+    failureConditions {
+        executionTimeoutMin = 120
     }
 
     requirements {
