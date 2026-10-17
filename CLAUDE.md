@@ -350,12 +350,18 @@ UBA executor가 Horde에 `GET http://<server>:13340/api/v1/server/auth`로 인�
 설계: `docs/superpowers/specs/2026-10-16-linux-build-machine-design.md`. 위키 `BuildMachine/01·02·08·10`에 현황·함정·남은 단계.
 
 - 192.168.219.180은 이제 **Ubuntu 26.04 `MAGI-AM02`** (예전 Windows+WSL "AYA-ZZANG"). TeamCity 서버·Caddy·samba는 Docker(`/home/gray/docker/docker-compose.yml`). `Agent_Win64`는 사라져 **삭제**했고, 에이전트는 `Agent_Linux`(id 231, 호스트 systemd, `devpub.role=server`) 하나.
-- **배정은 이름이 아니라 `devpub.role`**: LordMaker Server·Device = `server`(Agent_Linux), Client = `project`(Windows 에이전트 예정 — 없어서 큐 대기), UnrealEngine5 = 아직 `teamcity.agent.name = Agent_Win64`(Engine 에이전트를 붙일 때 `engine`으로).
+- **배정은 이름이 아니라 `devpub.role`**: LordMaker Server·Device·**Linux Gates (UE)** = `server`(Agent_Linux), Client = `project`(`Agent_Project`, MAGI-LAPTOP), UnrealEngine5 = `engine`(`Agent_Engine`, MAGI) — 단 `Build Linux Editor (Gates)`는 `server`. Windows 에이전트는 서비스 계정 `tcagent`, 공유 폴더는 UNC `\\192.168.219.180\Shared\…`(서비스는 `Z:` 같은 매핑 드라이브를 못 봄 → `tcagent`에 `cmdkey`).
 - 이 문서 아래의 `Agent_Win64`·`D:\…`·PowerShell 설명은 **Windows 시절 기준**이다. LordMaker Server·Device는 bash, LMCore는 gcc로 `.so`를 만든다(FP 결정론 플래그를 빌드가 검사).
 - 함정 3건(2026-10-16):
   1. TeamCity 데이터가 NTFS(`/mnt/d`, uid 33)에 있어 root git이 미러를 `dubious ownership`으로 거부 → 모든 VCS 루트가 `'origin' does not appear to be a git repository`로 조용히 멈춤. compose에 `GIT_CONFIG_COUNT=1 / GIT_CONFIG_KEY_0=safe.directory / GIT_CONFIG_VALUE_0=*`.
   2. DSL에서 빌드 구성 `object`가 최상위 `fun`/`val`을 참조하면 `captures the script class instance` 컴파일 오류 → 공통 스크립트는 `object X { val script = """…""" }`.
   3. 리눅스 에이전트 systemd 유닛에 `RemainAfterExit=yes`(+`SuccessExitStatus=0 143`)가 없으면 첫 자기 업그레이드 후 돌아오지 않음.
+- **P5 이후 운영 규칙(2026-10-17)**:
+  - `Agent_Project`는 사용자의 **개발 노트북**이다. 에이전트 빌드가 로컬 UE 빌드와 UBT 전역 뮤텍스(`Global\UnrealBuildTool_Mutex_…`, 엔진 경로 기준)로 충돌하므로 **Client 구성(Core Gates·Android Compile·Sync Engine·Package)은 모두 수동**(`enabled = false`). 자동 게임 회귀는 **`Client / Linux Gates (UE)`**(모든 브랜치 푸시, .180)와 **LMCore ctest**(`gate_*` 9종 + `rng_lint`)가 맡는다.
+  - 리눅스 게이트 엔진 = `UnrealEngine5 / Build Linux Editor (Gates)`(엔진 소스 트리 `/srv/teamcity/work/UE5-linux`, 얕은 복제, `BuildUBT.sh` 먼저, 엔진 `release` 변경 시만). Linux Gates는 LFS 포인터 `.uasset/.umap`을 지우고 `LordMakerEditor` Linux를 빌드한 뒤 `bash Tools/core_gates.sh`, 비교는 `sha256.lf.txt`(CR 제거).
+  - 클라 PR이 게이트 기준값을 바꾸면 노트북에서 Windows `Core Gates`를 main으로 1회(사용자 확인) → 그 `gates.zip`이 기준선 → Linux Gates로 대조.
+  - Windows PowerShell 스텝은 맨 앞에 `chcp 65001` + `[Console]::OutputEncoding=UTF8`(한글 로그 깨짐). Client `env.JAVA_HOME = %env.JDK_21_0_x64%`(JRE·최신 Studio jbr은 Gradle 8.13에서 실패). 부모 파라미터가 다른 OS 에이전트 속성을 참조하면 그 구성에서 덮어쓸 것(안 그러면 "no compatible agents").
+  - .180 보호: `teamcity-agent.service` `CPUWeight/IOWeight=20`, `MemoryHigh=14G`, `MemoryMax=16G`; `lordmaker@` `OOMScoreAdjust=-500`. Deploy Server 백업은 `sqlite3 -cmd ".timeout 30000"` + `.db.part` → 검사 후 개명.
 - DSL 오류 줄은 `GET /get/file/serverLogs/teamcity-versioned-settings.log`의 `Compilation error`에서 볼 수 있다. 설정이 옛 커밋에 머물면 먼저 VCS 루트 `lastVersion`을 확인(DSL 오류가 아니라 저장소를 못 읽는 것일 수 있음).
 
 ## LordMaker CI (`DevPub / LordMaker`)

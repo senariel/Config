@@ -256,9 +256,9 @@ horde-redis    redis:alpine (Nextcloud용과 분리)        볼륨 /srv/horde/re
 | P1 | 리눅스 에이전트 설치·승인, 툴셋. Server·Device 구성 리눅스 전환 | LMCore·Server Tests·Drift 녹색, 폰 재페어링·Deploy 성공 |
 | P2 | Horde 서버 compose 기동 | MAGI·MAGI-LAPTOP 워커가 Horde에 붙음 |
 | P3 | 게임 서버: 계정·경로·유닛·ufw. 8801을 새 DB로 먼저 기동 → Deploy Server로 배포 확인 → 결정론 게이트 G1~G4 | **완료(2026-10-16)**: Deploy #1 8801 28/23 totalTurns 54, G4 960행 일치 |
-| P4 | **전환 당일** (아래) | **완료(2026-10-16)**: Deploy #2 8800, Caddy 전환, `/internal/*` 403, 외부 접속 확인. 실기기 플레이 확인은 새 APK(P5) 뒤 |
-| P5 | Windows 에이전트 Engine·Project 설치, Client·UnrealEngine5 구성 이전, 엔진 전달 경로 | Editor Build·Package 녹색 |
-| P6 | 문서: 위키(01·02·05·06·07·08·09·10), Config `CLAUDE.md` | 위키만 보고 운영 가능 |
+| P4 | **전환 당일** (아래) | **완료(2026-10-16~17)**: Deploy #2 8800, Caddy 전환, `/internal/*` 403, 외부 접속 확인, 새 APK(Package #55) 실기기 플레이 확인(10-17). 노트북 옛 서버는 프로세스·자동 시작 없음 확인 |
+| P5 | Windows 에이전트 Engine·Project 설치, Client·UnrealEngine5 구성 이전, 엔진 전달 경로 | **완료(2026-10-17)**: Agent_Engine(MAGI)·Agent_Project(MAGI-LAPTOP), UNC + `cmdkey`, Sync Engine(robocopy /MIR), Package #55 녹색. Agent_Engine 첫 엔진 빌드는 다음 엔진 변경 때 확인 |
+| P6 | 문서: 위키(01·02·05·06·07·08·09·10), Config `CLAUDE.md` | 2026-10-17 위키 00·01·03·05~10과 `CLAUDE.md` 반영 |
 
 ### P4 전환 당일 순서 (서버 세션 제안)
 1. 노트북 양 인스턴스(8800·8801) 정지
@@ -269,6 +269,19 @@ horde-redis    redis:alpine (Nextcloud용과 분리)        볼륨 /srv/horde/re
 6. 클라 세션에 통지: 서버 목록 Lan(`192.168.219.180:8800`)·Test(8801) 프로필 주소 갱신
 7. 모바일 데이터로 외부 경로 확인(guest 로그인 → `/v1/compat` 200 → 던전 진입)
 8. 노트북 게임 서버 정리(Horde 워커는 유지)
+
+## 9. P5 실제 결과와 설계 변경 (2026-10-17)
+
+| 설계(위 6장) | 실제 |
+|---------------|------|
+| 외부 PC 2대 | Engine = MAGI(작업 PC), Project = MAGI-LAPTOP(개발 노트북) — 같은 공유기 안이라 VPN 불필요 |
+| 엔진 전달 = 7z + `latest.txt` | **공유 폴더 `robocopy /MIR`** (사용자 결정 — 예전 방식, 변경분만 이동). Build Editor가 `\\192.168.219.180\Shared\UE5`에 미러, Client `Sync Engine`이 `C:\Dev\Engine\UE5`로 미러(원본 점검 후, 트리거는 꺼 둠) |
+| `Infra / Sync Engine` | `Client / Sync Engine` (Client 하위) |
+| Client 4종 자동 | 개발 노트북 UBT 뮤텍스 충돌 → **Client 전부 수동**. 자동 회귀는 아래 리눅스 게이트 |
+| — | **게이트 분할**: 코어 검증은 LMCore ctest(`gate_*` 9종, 클라 PR #128) + `rng_lint`(#129), 언리얼 검증은 **.180 리눅스 경량 UE**(`Build Linux Editor (Gates)` → `Client / Linux Gates (UE)`, 모든 브랜치 푸시). 첫 대조에서 Windows 기준선 #4246과 리눅스 #4247이 요약 11종·trace 해시 6개 일치 |
+| — | .180 자원 보호(에이전트 CPUWeight/IOWeight 20·MemoryMax 16G, 게임 서버 OOMScoreAdjust −500). 리눅스 엔진 빌드 108분 동안 8800 응답 3ms 유지 |
+
+함정·세부는 위키 `BuildMachine/08`의 "Windows 에이전트"·"리눅스 UE"·"게임 서버 배포" 절.
 
 ## 범위 밖
 
