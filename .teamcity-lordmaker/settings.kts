@@ -311,6 +311,8 @@ object CoreProgramSpike : BuildType({
 
     artifactRules = """
         spike-run.log
+        core-gates => core-gates.zip
+        core-gates-run.log
     """.trimIndent()
 
     params {
@@ -361,6 +363,27 @@ object CoreProgramSpike : BuildType({
                 grep -a 'CORESPIKE' spike-run.log || echo ">> (no [CORESPIKE] lines)"
                 echo ">> SUMMARY clean=${'$'}((t1-t0))s incremental=${'$'}((t2-t1))s run_exit=${'$'}rc3"
                 [ ${'$'}rc3 -eq 0 ] || { echo "##teamcity[buildProblem description='LordMakerCore run exit ${'$'}rc3']"; exit 1; }
+            """.trimIndent()
+        }
+        script {
+            name = "Core gates (LordMakerCore -LMGate)"
+            id = "Core_Spike_Gates"
+            scriptContent = """
+                #!/usr/bin/env bash
+                set -uo pipefail
+                REPO="${'$'}PWD"
+                rm -rf -- core-gates core-gates-run.log
+                # 브랜치에 Tools/core_gates.sh의 UE_RUN_ARG 지원이 없으면(1d 이전 커밋) 건너뜀
+                if ! grep -q 'UE_RUN_ARG' Tools/core_gates.sh; then echo ">> core_gates.sh has no UE_RUN_ARG - skipped"; exit 0; fi
+                t0=${'$'}(date +%%s)
+                UE_CMD="${'$'}REPO/Binaries/Linux/LordMakerCore" UE_RUN_ARG=-LMGate UE_ARGS=-stdout bash Tools/core_gates.sh core-gates 2>&1 | tee core-gates-run.log
+                t1=${'$'}(date +%%s)
+                shopt -s nullglob
+                sums=(core-gates/*.summary.txt)
+                bad=""
+                for s in "${'$'}{sums[@]}"; do e=${'$'}(grep -oE 'exit=[0-9]+' "${'$'}s" | tail -1); [ "${'$'}e" = "exit=0" ] || bad="${'$'}bad ${'$'}(basename "${'$'}s")"; done
+                echo ">> CORE GATES ${'$'}{#sums[@]} runs in ${'$'}((t1-t0)) s, exit!=0:${'$'}{bad:- none}"
+                [ ${'$'}{#sums[@]} -gt 0 ] && [ -z "${'$'}bad" ] || { echo "##teamcity[buildProblem description='Core gates failed:${'$'}{bad:- no summaries}']"; exit 1; }
             """.trimIndent()
         }
     }
